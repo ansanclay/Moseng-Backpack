@@ -1,0 +1,2 @@
+"""Moseng Backpack - 3D Asset Management System"""
+__version__ = "0.1.0"
