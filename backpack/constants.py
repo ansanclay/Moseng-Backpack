@@ -168,6 +168,7 @@ SUB_TYPE_PATTERNS = [
     (re.compile(r"(rough|roughness|rgh)(?:[_\-\s]|$)", re.I), "roughness"),
     (re.compile(r"(metal|metallic|metalness|met)(?:[_\-\s]|$)", re.I), "metallic"),
     (re.compile(r"(spec|specular)(?:[_\-\s]|$)", re.I), "specular"),
+    (re.compile(r"(refl|reflection|reflect|reflectivity)(?:[_\-\s]|$)", re.I), "reflection"),
     (re.compile(r"(disp|displacement|height)(?:[_\-\s]|$)", re.I), "displacement"),
     (re.compile(r"(bump)(?:[_\-\s]|$)", re.I), "bump"),
     (re.compile(r"(ao|ambient_?occ|occlusion)(?:[_\-\s]|$)", re.I), "ao"),

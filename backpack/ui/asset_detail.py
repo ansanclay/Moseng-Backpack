@@ -438,6 +438,7 @@ _MAP_COLORS = {
     "roughness":    "#50c878",
     "metallic":     "#c8c8d8",
     "specular":     "#7ecfff",
+    "reflection":   "#aaddff",   # inverted specular — light blue
     "displacement": "#b0b0b0",
     "bump":         "#a0a4ff",
     "ao":           "#e0e0e0",

@@ -72,6 +72,14 @@ _KW: dict[str, str] = {
     "spec":         "specular",
     "spc":          "specular",
 
+    # ── Reflection (inverted specular) ───────────────────────────────────────
+    # REFL / reflection maps encode the inverse of specular — bright where
+    # the surface reflects, used in older / Specular-Gloss workflows.
+    "refl":         "reflection",
+    "reflection":   "reflection",
+    "reflect":      "reflection",
+    "reflectivity": "reflection",
+
     # ── Displacement / Height ────────────────────────────────────────────────
     "displacement": "displacement",
     "displace":     "displacement",
@@ -151,6 +159,7 @@ SUB_TYPE_LABEL: dict[str, str] = {
     "roughness":    "Roughness",
     "metallic":     "Metallic",
     "specular":     "Specular",
+    "reflection":   "Reflection (inv. Specular)",
     "displacement": "Displacement / Height",
     "bump":         "Bump",
     "ao":           "Ambient Occlusion",
@@ -170,6 +179,7 @@ IS_RAW: dict[str, bool] = {
     "roughness":    True,
     "metallic":     True,
     "specular":     False,
+    "reflection":   True,    # linear reflectance values
     "displacement": True,
     "bump":         True,
     "ao":           True,
@@ -184,7 +194,7 @@ IS_RAW: dict[str, bool] = {
 
 # Preferred display order in UI
 PREFERRED_ORDER = [
-    "albedo", "normal", "roughness", "metallic", "specular",
+    "albedo", "normal", "roughness", "metallic", "specular", "reflection",
     "ao", "displacement", "bump", "emissive", "opacity",
     "translucency", "gloss", "cavity", "curvature", "fuzz",
 ]
