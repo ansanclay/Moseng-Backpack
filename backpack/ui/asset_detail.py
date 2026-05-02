@@ -432,26 +432,45 @@ class StarRating(QWidget):
             b.setStyleSheet(f"QPushButton {{ color: {c}; font-size: 15px; background: transparent; border: none; }}")
 
 
+_MAP_COLORS = {
+    "albedo":       "#5b9cf6",
+    "normal":       "#9b8aff",
+    "roughness":    "#50c878",
+    "metallic":     "#c8c8d8",
+    "specular":     "#7ecfff",
+    "displacement": "#b0b0b0",
+    "bump":         "#a0a4ff",
+    "ao":           "#e0e0e0",
+    "emissive":     "#f5c842",
+    "opacity":      "#e07a8a",
+    "gloss":        "#80e8c0",
+    "translucency": "#99eedd",
+    "cavity":       "#cc8888",
+    "curvature":    "#ddaa66",
+    "fuzz":         "#d4a0d0",
+}
+
+
 class MapBadge(QWidget):
     def __init__(self, sub_type: str, filename: str, parent=None):
         super().__init__(parent)
+        from backpack.core.map_detector import SUB_TYPE_LABEL
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
         lay.setSpacing(6)
-        colors = {
-            "albedo": "#002aff", "diffuse": "#002aff", "normal": "#8080ff",
-            "roughness": "#50c878", "metallic": "#d4d6db", "displacement": "#c0c0c0",
-            "ao": "#ffffff", "emissive": "#f0c050", "opacity": "#e06070",
-            "bump": "#a0a0ff", "preview": "#ff9040",
-        }
+
         dot = QLabel("\u25cf")
-        dot.setStyleSheet(f"color: {colors.get(sub_type, '#6b6e76')}; font-size: 8px;")
+        color = _MAP_COLORS.get(sub_type, "#6b6e76")
+        dot.setStyleSheet(f"color: {color}; font-size: 8px;")
         dot.setFixedWidth(12)
         lay.addWidget(dot)
-        tl = QLabel(sub_type.title() if sub_type else "Unknown")
-        tl.setStyleSheet("color: #6f7280; font-size: 11px; font-weight: 600;")
-        tl.setFixedWidth(80)
+
+        label = SUB_TYPE_LABEL.get(sub_type, sub_type.title() if sub_type else "Unknown")
+        tl = QLabel(label)
+        tl.setStyleSheet("color: #9ea0a8; font-size: 11px; font-weight: 600;")
+        tl.setFixedWidth(110)
         lay.addWidget(tl)
+
         fl = QLabel(filename)
         fl.setStyleSheet("color: #4c4e58; font-size: 11px;")
         lay.addWidget(fl, stretch=1)

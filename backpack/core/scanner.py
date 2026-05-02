@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from backpack.constants import IMAGE_EXTENSIONS, SUB_TYPE_PATTERNS, QUIXEL_PREVIEW_PATTERNS
+from backpack.core.map_detector import detect_sub_type as _detect_sub_type_new
 from backpack.core.metadata import (
     read_asset_meta, read_material_meta, write_asset_meta, write_material_meta,
     json_path_for_file, json_path_for_material,
@@ -235,7 +236,11 @@ def _scan_single_file(
 
 
 def _detect_sub_type(stem: str) -> str:
-    """Detect PBR map sub-type from filename stem."""
+    """Detect PBR map sub-type from filename stem (uses map_detector)."""
+    result = _detect_sub_type_new(stem)
+    if result:
+        return result
+    # Legacy fallback for any edge-cases not yet covered
     for pattern, sub in SUB_TYPE_PATTERNS:
         if pattern.search(stem):
             return sub

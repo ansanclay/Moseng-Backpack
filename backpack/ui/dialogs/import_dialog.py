@@ -1,7 +1,9 @@
-"""Import wizard - 2 step dialog for importing files.
+"""Import wizard — drag-and-drop or folder import for Moseng Backpack.
 
-Step 1: Select asset type (Material, Texture, Gobo, Other) - auto-detected, user confirms
-Step 2: Select source (Quixel, Poliigon, textures.com, Other) - only for Materials
+Step 1  Auto-detects asset type (Material / Texture / Gobo / Other).
+        Uses map_detector.group_into_materials() to discover PBR sets even
+        when files are dropped as a flat list (no folder structure required).
+Step 2  For materials: confirm / tweak detected groupings before copying.
 """
 
 import shutil
@@ -10,34 +12,45 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QRadioButton, QButtonGroup, QProgressBar, QGroupBox,
-    QFileDialog,
+    QTreeWidget, QTreeWidgetItem, QSizePolicy, QFrame,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 
 from backpack.constants import IMAGE_EXTENSIONS, EXTENSION_MAP
+from backpack.core.map_detector import (
+    group_into_materials, detect_sub_type,
+    SUB_TYPE_LABEL, PREFERRED_ORDER, confidence,
+)
 from backpack.utils.file_utils import collect_files
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+
 class ImportDialog(QDialog):
-    """Two-step import wizard."""
+    """Two-step import wizard with auto-detect material grouping."""
 
     def __init__(self, source_paths: list[str], backpack_root: Path, parent=None):
         super().__init__(parent)
         self.source_paths = source_paths
         self.backpack_root = backpack_root
         self.setWindowTitle("Import Assets")
-        self.setMinimumSize(480, 420)
+        self.setMinimumSize(520, 500)
 
-        self.chosen_type = ""    # material, texture, gobo, other
-        self.chosen_source = ""  # quixel, poliigon, textures_com, other
+        self.chosen_type   = ""
+        self.chosen_source = ""
         self.imported_count = 0
-        self.imported_folders: list[Path] = []     # material folders created
-        self.imported_dest_folder: Path | None = None  # flat folder used for loose assets
+        self.imported_folders: list[Path] = []
+        self.imported_dest_folder: Path | None = None
 
-        self._files = self._collect_all_files()
-        self._auto_type = self._detect_type()
+        # ── Collect files + auto-detect ───────────────────────────────────
+        self._files      = self._collect_all_files()
+        self._mat_groups = group_into_materials(self._files)   # base→{sub→Path}
+        self._auto_type  = self._detect_type()
 
         self._setup_ui()
+
+    # ── File collection ───────────────────────────────────────────────────────
 
     def _collect_all_files(self) -> list[Path]:
         files = []
@@ -47,63 +60,57 @@ class ImportDialog(QDialog):
         return files
 
     def _detect_type(self) -> str:
-        """Auto-detect if this looks like a material set, textures, gobo, etc."""
         if not self._files:
             return "other"
 
         exts = {f.suffix.lower() for f in self._files}
-        texture_exts = exts & IMAGE_EXTENSIONS
-
-        # Check if multiple PBR maps exist (= material)
-        from backpack.constants import SUB_TYPE_PATTERNS
-        found_subtypes = set()
-        for f in self._files:
-            for pat, sub in SUB_TYPE_PATTERNS:
-                if pat.search(f.stem):
-                    found_subtypes.add(sub)
-                    break
-
-        if len(found_subtypes) >= 2:
-            return "material"
 
         if ".ies" in exts:
             return "gobo"
 
-        if texture_exts:
-            return "texture"
+        # A material group needs ≥ 2 recognised PBR sub-types
+        valid_mats = {
+            name: maps for name, maps in self._mat_groups.items()
+            if sum(1 for k in maps if k in SUB_TYPE_LABEL) >= 2
+        }
+        if valid_mats:
+            return "material"
 
-        model_exts = {".obj", ".fbx", ".abc", ".usd", ".usda", ".usdc"}
-        if exts & model_exts:
-            return "other"
+        if exts & IMAGE_EXTENSIONS:
+            return "texture"
 
         return "other"
 
+    # ── UI ────────────────────────────────────────────────────────────────────
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
+        layout.setContentsMargins(18, 18, 18, 18)
 
         # Header
         header = QLabel("Import Assets")
         header.setObjectName("heading")
         layout.addWidget(header)
 
-        file_info = QLabel(f"{len(self._files)} file(s) from {len(self.source_paths)} item(s)")
+        file_info = QLabel(
+            f"{len(self._files)} file(s) found  ·  "
+            f"{len(self._mat_groups)} material group(s) detected"
+        )
         file_info.setObjectName("subtext")
         layout.addWidget(file_info)
 
-        # ── Step 1: Asset Type ──
-        type_group_box = QGroupBox("Step 1: What type of asset is this?")
-        type_layout = QVBoxLayout(type_group_box)
+        # ── Step 1: Asset Type ────────────────────────────────────────────
+        type_box = QGroupBox("Step 1 — Asset Type")
+        type_layout = QVBoxLayout(type_box)
         self._type_group = QButtonGroup(self)
 
-        types = [
-            ("material", "Material (PBR texture set - albedo, normal, roughness, etc.)"),
-            ("texture", "Texture (single texture files)"),
-            ("gobo", "Gobo / IES (light cookies, IES profiles)"),
-            ("other", "Other"),
-        ]
-
-        for value, label in types:
+        for value, label in [
+            ("material", "Material  (PBR texture set — albedo, normal, roughness…)"),
+            ("texture",  "Texture  (single image files)"),
+            ("gobo",     "Gobo / IES  (light cookies, IES profiles)"),
+            ("other",    "Other"),
+        ]:
             rb = QRadioButton(label)
             rb.setProperty("type_value", value)
             self._type_group.addButton(rb)
@@ -112,21 +119,43 @@ class ImportDialog(QDialog):
                 rb.setChecked(True)
 
         self._type_group.buttonClicked.connect(self._on_type_changed)
-        layout.addWidget(type_group_box)
+        layout.addWidget(type_box)
 
-        # ── Step 2: Source (only for materials) ──
-        self._source_group_box = QGroupBox("Step 2: Source")
-        source_layout = QVBoxLayout(self._source_group_box)
+        # ── Step 2: Detected groups (materials only) ──────────────────────
+        self._groups_box = QGroupBox("Step 2 — Detected Material Groups")
+        groups_layout = QVBoxLayout(self._groups_box)
+
+        self._groups_tree = QTreeWidget()
+        self._groups_tree.setHeaderLabels(["Material / Map", "File"])
+        self._groups_tree.setColumnWidth(0, 220)
+        self._groups_tree.setMinimumHeight(160)
+        self._groups_tree.setRootIsDecorated(True)
+        self._groups_tree.setAlternatingRowColors(True)
+        self._populate_groups_tree()
+        groups_layout.addWidget(self._groups_tree)
+
+        det_note = QLabel(
+            "Maps are auto-detected from filenames. "
+            "Each top-level group becomes one material folder."
+        )
+        det_note.setObjectName("subtext")
+        det_note.setWordWrap(True)
+        groups_layout.addWidget(det_note)
+
+        layout.addWidget(self._groups_box)
+        self._groups_box.setVisible(self._auto_type == "material")
+
+        # ── Step 3: Source ────────────────────────────────────────────────
+        self._source_box = QGroupBox("Step 3 — Source")
+        source_layout = QVBoxLayout(self._source_box)
         self._source_group = QButtonGroup(self)
 
-        sources = [
-            ("quixel", "Quixel Megascans"),
-            ("poliigon", "Poliigon"),
-            ("textures_com", "textures.com / ambientCG"),
-            ("other", "Other"),
-        ]
-
-        for value, label in sources:
+        for value, label in [
+            ("quixel",       "Quixel Megascans"),
+            ("poliigon",     "Poliigon"),
+            ("textures_com", "textures.com / AmbientCG"),
+            ("other",        "Other / Custom"),
+        ]:
             rb = QRadioButton(label)
             rb.setProperty("source_value", value)
             self._source_group.addButton(rb)
@@ -134,10 +163,10 @@ class ImportDialog(QDialog):
             if value == "other":
                 rb.setChecked(True)
 
-        layout.addWidget(self._source_group_box)
-        self._source_group_box.setVisible(self._auto_type == "material")
+        layout.addWidget(self._source_box)
+        self._source_box.setVisible(self._auto_type == "material")
 
-        # ── Progress ──
+        # ── Progress ──────────────────────────────────────────────────────
         self.progress_label = QLabel("")
         self.progress_label.setObjectName("subtext")
         self.progress_label.hide()
@@ -147,7 +176,7 @@ class ImportDialog(QDialog):
         self.progress.hide()
         layout.addWidget(self.progress)
 
-        # ── Buttons ──
+        # ── Buttons ───────────────────────────────────────────────────────
         layout.addStretch()
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -163,13 +192,60 @@ class ImportDialog(QDialog):
 
         layout.addLayout(btn_row)
 
+    def _populate_groups_tree(self):
+        """Fill the material-groups tree with detected groupings."""
+        tree = self._groups_tree
+        tree.clear()
+
+        for base_name, maps in sorted(self._mat_groups.items()):
+            known_count = sum(1 for k in maps if k in SUB_TYPE_LABEL)
+            conf = confidence(maps)
+
+            # Root item — material name
+            root = QTreeWidgetItem([
+                base_name,
+                f"{known_count} map(s)  [{int(conf * 100)}% confidence]",
+            ])
+            root.setExpanded(known_count >= 2)
+
+            # Color-code by confidence
+            if conf >= 0.5:
+                root.setForeground(0, QColor("#6fcf97"))   # green
+            elif conf >= 0.2:
+                root.setForeground(0, QColor("#f2c94c"))   # yellow
+            else:
+                root.setForeground(0, QColor("#eb5757"))   # red / uncertain
+
+            # Child rows — one per map
+            for sub in PREFERRED_ORDER:
+                if sub not in maps:
+                    continue
+                label = SUB_TYPE_LABEL.get(sub, sub)
+                child = QTreeWidgetItem([f"  {label}", maps[sub].name])
+                child.setForeground(0, QColor("#bdbdbd"))
+                root.addChild(child)
+
+            # Unrecognised maps
+            for key, path in maps.items():
+                if key in SUB_TYPE_LABEL or key in PREFERRED_ORDER:
+                    continue
+                child = QTreeWidgetItem([f"  {key}  (unrecognised)", path.name])
+                child.setForeground(0, QColor("#828282"))
+                root.addChild(child)
+
+            tree.addTopLevelItem(root)
+
+    # ── Signals ───────────────────────────────────────────────────────────────
+
     def _on_type_changed(self, btn):
         val = btn.property("type_value")
-        self._source_group_box.setVisible(val == "material")
+        is_mat = (val == "material")
+        self._groups_box.setVisible(is_mat)
+        self._source_box.setVisible(is_mat)
+
+    # ── Import ────────────────────────────────────────────────────────────────
 
     def _do_import(self):
-        """Copy files to the BACKPACK folder structure."""
-        # Get selections
         type_btn = self._type_group.checkedButton()
         self.chosen_type = type_btn.property("type_value") if type_btn else "other"
 
@@ -183,13 +259,12 @@ class ImportDialog(QDialog):
         try:
             if self.chosen_type == "material":
                 self._import_as_material()
-            elif self.chosen_type == "texture":
-                self._import_to_folder("Images/Textures")
             elif self.chosen_type == "gobo":
-                self._import_to_folder("Images/Gobos")
+                self._import_to_folder("Gobo")
+            elif self.chosen_type == "texture":
+                self._import_to_folder("Textures")
             else:
-                self._import_to_folder("Images/Textures")
-
+                self._import_to_folder("Other")
             self.accept()
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
@@ -197,58 +272,60 @@ class ImportDialog(QDialog):
             self.btn_import.setEnabled(True)
 
     def _import_as_material(self):
-        """Import as material - each source folder becomes a material folder."""
-        dest_base = self.backpack_root / "Materials" / "PBR_Materials"
+        """Copy files into material folders, grouped by detected base name."""
+        source_name = self.chosen_source or "Other"
+        dest_base   = self.backpack_root / "Materials" / source_name.capitalize()
 
-        total = len(self._files)
-        self.progress.setMaximum(total)
+        # Build a definitive group map: prefer detected groups when dropping
+        # loose files; fall back to per-source-folder grouping
+        if self._mat_groups:
+            all_groups = {
+                name: {sub: path for sub, path in maps.items()}
+                for name, maps in self._mat_groups.items()
+            }
+        else:
+            # Fallback: each source path becomes one material
+            all_groups = {}
+            for p_str in self.source_paths:
+                p = Path(p_str)
+                if p.is_dir():
+                    files = list(collect_files(p, recursive=False))
+                    all_groups[p.name] = {detect_sub_type(f.stem) or f.stem: f for f in files}
+                else:
+                    all_groups[p.stem] = {detect_sub_type(p.stem) or p.stem: p}
 
-        for i, src_path in enumerate(self.source_paths):
-            p = Path(src_path)
-            if p.is_dir():
-                # Copy entire folder as a material
-                mat_name = p.name
-                dest_dir = dest_base / mat_name
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                self.imported_folders.append(dest_dir)
+        total = sum(len(maps) for maps in all_groups.values())
+        self.progress.setMaximum(max(total, 1))
+        done = 0
 
-                files_in_dir = collect_files(p, recursive=False)
-                for j, f in enumerate(files_in_dir):
-                    dest_file = dest_dir / f.name
-                    if not dest_file.exists():
-                        shutil.copy2(str(f), str(dest_file))
-                    self.progress.setValue(self.progress.value() + 1)
-                    self.progress_label.setText(f"Copying: {f.name}")
-                    from PySide6.QtWidgets import QApplication
-                    QApplication.processEvents()
-            else:
-                # Single file - create a material folder from stem
-                mat_name = p.stem
-                dest_dir = dest_base / mat_name
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                self.imported_folders.append(dest_dir)
-                dest_file = dest_dir / p.name
+        for mat_name, maps in all_groups.items():
+            dest_dir = dest_base / mat_name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            self.imported_folders.append(dest_dir)
+
+            for _sub, src_path in maps.items():
+                dest_file = dest_dir / src_path.name
                 if not dest_file.exists():
-                    shutil.copy2(str(p), str(dest_file))
-                self.progress.setValue(i + 1)
-                self.progress_label.setText(f"Copying: {p.name}")
+                    shutil.copy2(str(src_path), str(dest_file))
+                done += 1
+                self.progress.setValue(done)
+                self.progress_label.setText(f"Copying: {src_path.name}")
                 from PySide6.QtWidgets import QApplication
                 QApplication.processEvents()
 
-        self.imported_count = total
+        self.imported_count = done
 
     def _import_to_folder(self, folder_name: str):
-        """Import loose files into a flat folder."""
+        """Copy loose files into a flat category folder."""
         dest_base = self.backpack_root / folder_name
         dest_base.mkdir(parents=True, exist_ok=True)
         self.imported_dest_folder = dest_base
 
         total = len(self._files)
-        self.progress.setMaximum(total)
+        self.progress.setMaximum(max(total, 1))
 
         for i, f in enumerate(self._files):
             dest_file = dest_base / f.name
-            # Handle name collision
             if dest_file.exists():
                 stem, ext = dest_file.stem, dest_file.suffix
                 counter = 1

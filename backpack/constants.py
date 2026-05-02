@@ -160,23 +160,25 @@ EXTENSION_MAP = {
 }
 
 # ── PBR map detection patterns ──
+# Kept for backward-compatibility; scanner.py and new code use
+# backpack.core.map_detector.detect_sub_type() instead.
 SUB_TYPE_PATTERNS = [
-    (re.compile(r"(diffuse|diff|albedo|base_?color|col)\b", re.I), "albedo"),
-    (re.compile(r"(normal|nrm|nor|nml)\b", re.I), "normal"),
-    (re.compile(r"(rough|roughness|rgh)\b", re.I), "roughness"),
-    (re.compile(r"(metal|metallic|metalness|met)\b", re.I), "metallic"),
-    (re.compile(r"(spec|specular)\b", re.I), "specular"),
-    (re.compile(r"(disp|displacement|height)\b", re.I), "displacement"),
-    (re.compile(r"(bump)\b", re.I), "bump"),
-    (re.compile(r"(ao|ambient_?occ|occlusion)\b", re.I), "ao"),
-    (re.compile(r"(emissive|emission|glow)\b", re.I), "emissive"),
-    (re.compile(r"(opacity|alpha|mask|transparency)\b", re.I), "opacity"),
-    (re.compile(r"(gloss|glossiness)\b", re.I), "gloss"),
-    (re.compile(r"(cavity)\b", re.I), "cavity"),
-    (re.compile(r"(curvature|curv)\b", re.I), "curvature"),
-    (re.compile(r"(translucen|sss|subsurface)\b", re.I), "translucency"),
-    (re.compile(r"(fuzz|fuzziness)\b", re.I), "fuzz"),
-    (re.compile(r"(preview|thumb|thumbnail)\b", re.I), "preview"),
+    (re.compile(r"(diffuse|diff|albedo|base_?color|col)(?:[_\-\s]|$)", re.I), "albedo"),
+    (re.compile(r"(normal|nrm|nor|nml|norm)(?:[_\-\s]|$)", re.I), "normal"),
+    (re.compile(r"(rough|roughness|rgh)(?:[_\-\s]|$)", re.I), "roughness"),
+    (re.compile(r"(metal|metallic|metalness|met)(?:[_\-\s]|$)", re.I), "metallic"),
+    (re.compile(r"(spec|specular)(?:[_\-\s]|$)", re.I), "specular"),
+    (re.compile(r"(disp|displacement|height)(?:[_\-\s]|$)", re.I), "displacement"),
+    (re.compile(r"(bump)(?:[_\-\s]|$)", re.I), "bump"),
+    (re.compile(r"(ao|ambient_?occ|occlusion)(?:[_\-\s]|$)", re.I), "ao"),
+    (re.compile(r"(emissive|emission|glow)(?:[_\-\s]|$)", re.I), "emissive"),
+    (re.compile(r"(opacity|alpha|mask|transparency)(?:[_\-\s]|$)", re.I), "opacity"),
+    (re.compile(r"(gloss|glossiness)(?:[_\-\s]|$)", re.I), "gloss"),
+    (re.compile(r"(cavity)(?:[_\-\s]|$)", re.I), "cavity"),
+    (re.compile(r"(curvature|curv)(?:[_\-\s]|$)", re.I), "curvature"),
+    (re.compile(r"(translucen|sss|subsurface)(?:[_\-\s]|$)", re.I), "translucency"),
+    (re.compile(r"(fuzz|fuzziness)(?:[_\-\s]|$)", re.I), "fuzz"),
+    (re.compile(r"(preview|thumb|thumbnail)(?:[_\-\s]|$)", re.I), "preview"),
 ]
 
 HDRI_NAME_PATTERNS = re.compile(
