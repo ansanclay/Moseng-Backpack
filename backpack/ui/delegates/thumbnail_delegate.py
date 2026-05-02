@@ -137,6 +137,13 @@ class ThumbnailDelegate(QStyledItemDelegate):
 
         QPixmapCache.setCacheLimit(_CACHE_MB * 1024)
 
+        # Debounce viewport repaints: batch all image-ready signals into one
+        # update call instead of repainting for every single decoded thumbnail.
+        self._repaint_timer = QTimer()
+        self._repaint_timer.setSingleShot(True)
+        self._repaint_timer.setInterval(16)   # ≤1 frame @ 60 fps
+        self._repaint_timer.timeout.connect(self._do_repaint)
+
         self._anim_start: dict[int, float] = {}
         self._anim_tick = QTimer()
         self._anim_tick.setInterval(14)   # ~70 fps
@@ -191,18 +198,43 @@ class ThumbnailDelegate(QStyledItemDelegate):
         self._pending.discard(cache_key)
         if img is not None and not img.isNull():
             QPixmapCache.insert(cache_key, QPixmap.fromImage(img))
+        # Debounce: schedule one repaint for all images that arrived this frame
+        self._repaint_timer.start()
+
+    def _do_repaint(self):
         view = self.parent()
         if view and hasattr(view, "viewport"):
             view.viewport().update()
 
-    # Cache-first pixmap lookup
+    # Cache-first pixmap lookup — returns pixmap pre-scaled to thumbnail size.
+    # A size-keyed entry is created on first use so paint() never calls
+    # pix.scaled() (SmoothTransformation) on every frame.
 
     def _pixmap(self, path: str) -> "QPixmap | None":
         if not path:
             return None
-        pm = QPixmapCache.find(path)
+
+        thumb_h  = int(self.card_height * 0.68)
+        tw       = self.card_width - 2
+        sized_key = f"{path}\x00{tw}x{thumb_h}"
+
+        # Fast path: sized pixmap already cached
+        pm = QPixmapCache.find(sized_key)
         if pm:
             return pm
+
+        # Full-size pixmap in cache → scale once and store
+        full_pm = QPixmapCache.find(path)
+        if full_pm:
+            scaled = full_pm.scaled(
+                QSize(tw, thumb_h),
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation,
+            )
+            QPixmapCache.insert(sized_key, scaled)
+            return scaled
+
+        # Not decoded yet — submit job
         if path not in self._pending:
             self._pending.add(path)
             self._pool.start(_DecodeJob(path, path, _THUMB_MAX, self._signals))
@@ -265,12 +297,12 @@ class ThumbnailDelegate(QStyledItemDelegate):
         pix = self._pixmap(index.data(Qt.UserRole + 1))
 
         if pix and not pix.isNull():
-            sc = pix.scaled(tr.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            xo = (sc.width()  - tr.width())  // 2
-            yo = (sc.height() - tr.height()) // 2
+            # pixmap is already scaled to thumbnail size by _pixmap()
+            xo = (pix.width()  - tr.width())  // 2
+            yo = (pix.height() - tr.height()) // 2
             painter.save()
             painter.setClipPath(card)
-            painter.drawPixmap(tr.topLeft(), sc, QRect(xo, yo, tr.width(), tr.height()))
+            painter.drawPixmap(tr.topLeft(), pix, QRect(xo, yo, tr.width(), tr.height()))
 
             # Gradient fade at bottom of thumb -- matches surface bg #04060f
             g = QLinearGradient(tr.x(), tr.bottom() - 44, tr.x(), tr.bottom() + 1)

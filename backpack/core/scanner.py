@@ -8,6 +8,7 @@ Folder structure:
   DRIVE:\BACKPACK\Other\file.ext
 """
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,44 @@ from backpack.core.metadata import (
 )
 from backpack.core.preview import preview_path_for, PREVIEW_DIR_NAME
 from backpack.core.metadata import JSON_DIR_NAME
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fast per-folder metadata helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _read_dir_names(folder: Path) -> set[str]:
+    """Return the set of filenames inside *folder*, or empty set on error."""
+    try:
+        return {p.name for p in folder.iterdir()}
+    except (PermissionError, FileNotFoundError):
+        return set()
+
+
+def _load_meta_json(path: Path, cls):
+    """Deserialise a dataclass from a JSON file (caller must know it exists)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls(**{k: v for k, v in data.items()
+                      if k in cls.__dataclass_fields__})
+    except (json.JSONDecodeError, TypeError, OSError):
+        return cls()
+
+
+def _folder_caches(folder: Path):
+    """Read .json/ and .preview/ dirs once; return (json_names, preview_names, json_dir, preview_dir).
+
+    Replaces per-file Path.exists() calls with two bulk iterdir() reads,
+    reducing syscall count from O(n_files) to O(1) per material folder.
+    """
+    json_dir    = folder / JSON_DIR_NAME
+    preview_dir = folder / PREVIEW_DIR_NAME
+    return (
+        _read_dir_names(json_dir),
+        _read_dir_names(preview_dir),
+        json_dir,
+        preview_dir,
+    )
 
 
 @dataclass
@@ -221,8 +260,13 @@ def _scan_model_asset_folder(
     detail panel need no changes.
     """
     rel = str(folder.relative_to(backpack_root)).replace("\\", "/")
-    meta = read_material_meta(folder)
-    has_json = json_path_for_material(folder).exists()
+
+    # ── Pre-read .json/ and .preview/ dirs once ───────────────────────────────
+    _json_names, _prev_names, _json_dir, _prev_dir = _folder_caches(folder)
+
+    mat_json = f"{folder.name}_backpack.json"
+    has_json = mat_json in _json_names
+    meta = _load_meta_json(_json_dir / mat_json, MaterialMeta) if has_json else MaterialMeta()
 
     mat = ScannedMaterial(
         path=folder,
@@ -235,8 +279,8 @@ def _scan_model_asset_folder(
 
     preview_path: Optional[Path] = None
     _SKIP_DIRS = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
+    _subdir_prev: dict[Path, set[str]] = {}
 
-    # Collect (file, subfolder_hint) from direct children + one subdir level
     files_to_scan: list[tuple[Path, str]] = []
     for entry in sorted(folder.iterdir()):
         if entry.name.startswith(".") or entry.name in _SKIP_DIRS:
@@ -245,6 +289,8 @@ def _scan_model_asset_folder(
             files_to_scan.append((entry, ""))
         elif entry.is_dir():
             hint = entry.name
+            sub_prev_dir = entry / PREVIEW_DIR_NAME
+            _subdir_prev[entry] = _read_dir_names(sub_prev_dir)
             for sub_f in sorted(entry.iterdir()):
                 if sub_f.is_file() and not sub_f.name.startswith("."):
                     files_to_scan.append((sub_f, hint))
@@ -254,7 +300,6 @@ def _scan_model_asset_folder(
         if ext in _SKIP_EXTS:
             continue
 
-        # ── Preview detection ─────────────────────────────────────────────────
         is_preview = False
         for pat in QUIXEL_PREVIEW_PATTERNS:
             if pat.search(f.stem) or (subfolder_hint and pat.search(subfolder_hint)):
@@ -268,31 +313,36 @@ def _scan_model_asset_folder(
             mat.meta.preview_file = f.name
             continue
 
-        # ── Model / scene files ───────────────────────────────────────────────
+        # Shared helpers for metadata / preview lookup
+        file_json = f"{f.stem}_backpack.json"
+        f_has_json = file_json in _json_names
+        asset_meta = _load_meta_json(_json_dir / file_json, AssetMeta) if f_has_json else AssetMeta()
+        prev_name = f"{f.stem}_preview.jpg"
+        if f.parent == folder:
+            pcache = (_prev_dir / prev_name) if prev_name in _prev_names else None
+        else:
+            sp = _subdir_prev.get(f.parent, set())
+            pcache = (f.parent / PREVIEW_DIR_NAME / prev_name) if prev_name in sp else None
+
         if ext in _MODEL_EXTS or ext in _SCENE_EXTS:
-            asset_meta = read_asset_meta(f)
-            pcache = preview_path_for(f)
             asset = ScannedAsset(
                 path=f,
                 filename=f.name,
                 rel_path=str(f.relative_to(backpack_root)).replace("\\", "/"),
                 asset_type="model",
-                sub_type=ext.lstrip("."),   # "fbx", "obj", "abc", …
+                sub_type=ext.lstrip("."),
                 meta=asset_meta,
-                has_json=json_path_for_file(f).exists(),
+                has_json=f_has_json,
                 material_folder=folder.name,
-                preview_cache=pcache if pcache.exists() else None,
+                preview_cache=pcache,
             )
             mat.maps.append(asset)
             continue
 
-        # ── Bundled textures ──────────────────────────────────────────────────
         if ext in _TEXTURE_EXTS or ext in _HDRI_EXTS:
             sub_type = _detect_sub_type(f.stem)
             if not sub_type and subfolder_hint:
                 sub_type = _detect_sub_type(subfolder_hint)
-            asset_meta = read_asset_meta(f)
-            pcache = preview_path_for(f)
             asset = ScannedAsset(
                 path=f,
                 filename=f.name,
@@ -300,15 +350,14 @@ def _scan_model_asset_folder(
                 asset_type="texture",
                 sub_type=sub_type or "",
                 meta=asset_meta,
-                has_json=json_path_for_file(f).exists(),
+                has_json=f_has_json,
                 material_folder=folder.name,
-                preview_cache=pcache if pcache.exists() else None,
+                preview_cache=pcache,
             )
             mat.maps.append(asset)
 
     mat.preview_path = preview_path
 
-    # Fallback preview: albedo texture → any texture
     if not mat.preview_path:
         for a in mat.maps:
             if a.asset_type == "texture" and a.sub_type == "albedo":
@@ -321,8 +370,8 @@ def _scan_model_asset_folder(
                 break
 
     if mat.preview_path:
-        pcache = preview_path_for(mat.preview_path)
-        mat.preview_cache = pcache if pcache.exists() else None
+        prev_name = f"{mat.preview_path.stem}_preview.jpg"
+        mat.preview_cache = (_prev_dir / prev_name) if prev_name in _prev_names else None
 
     return mat
 
@@ -387,8 +436,12 @@ def _scan_material_folder(
     """Scan a single material folder."""
     rel = str(folder.relative_to(backpack_root)).replace("\\", "/")
 
-    meta = read_material_meta(folder)
-    has_json = json_path_for_material(folder).exists()
+    # ── Pre-read .json/ and .preview/ dirs once (O(1) vs O(n) exists() calls) ─
+    _json_names, _prev_names, _json_dir, _prev_dir = _folder_caches(folder)
+
+    mat_json = f"{folder.name}_backpack.json"
+    has_json = mat_json in _json_names
+    meta = _load_meta_json(_json_dir / mat_json, MaterialMeta) if has_json else MaterialMeta()
 
     mat = ScannedMaterial(
         path=folder,
@@ -400,15 +453,11 @@ def _scan_material_folder(
     )
 
     preview_path = None
-
-    # ── Collect (file, subfolder_hint) pairs ─────────────────────────────────
-    # Direct children first, then one level of subfolders.
-    # subfolder_hint carries the subfolder name so we can fall back to it
-    # for sub-type detection when the filename has no keyword
-    # (e.g.  Rock/Albedo/file.jpg  →  hint="Albedo"  →  sub_type="albedo").
     _SKIP_DIRS = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
 
     files_to_scan: list[tuple[Path, str]] = []   # (path, subfolder_hint)
+    # Also cache per-subdir previews so files in subdirs get their preview checked
+    _subdir_prev: dict[Path, set[str]] = {}
 
     for entry in sorted(folder.iterdir()):
         if entry.name.startswith(".") or entry.name in _SKIP_DIRS:
@@ -416,8 +465,9 @@ def _scan_material_folder(
         if entry.is_file():
             files_to_scan.append((entry, ""))
         elif entry.is_dir():
-            # One level of subfolders — use the folder name as sub-type hint
             hint = entry.name
+            sub_prev_dir = entry / PREVIEW_DIR_NAME
+            _subdir_prev[entry] = _read_dir_names(sub_prev_dir)
             for sub_f in sorted(entry.iterdir()):
                 if sub_f.is_file() and not sub_f.name.startswith("."):
                     files_to_scan.append((sub_f, hint))
@@ -427,15 +477,10 @@ def _scan_material_folder(
         if ext in _SKIP_EXTS:
             continue
 
-        # Detect sub-type from filename; fall back to subfolder name
         sub_type = _detect_sub_type(f.stem)
         if not sub_type and subfolder_hint:
             sub_type = _detect_sub_type(subfolder_hint)
 
-        # Check if preview:
-        # 1. Filename matches a known preview pattern (Preview, Thumb, etc.)
-        # 2. File stem equals the material folder name → preview thumbnail
-        # 3. Subfolder is named "Preview", "Thumb", etc.
         is_preview = False
         for pat in QUIXEL_PREVIEW_PATTERNS:
             if pat.search(f.stem) or (subfolder_hint and pat.search(subfolder_hint)):
@@ -448,11 +493,22 @@ def _scan_material_folder(
         if is_preview and ext in _TEXTURE_EXTS:
             preview_path = f
             mat.meta.preview_file = f.name
-            continue  # preview-only file — not a map
+            continue
 
         if ext in _TEXTURE_EXTS or ext in _HDRI_EXTS:
-            asset_meta = read_asset_meta(f)
-            pcache = preview_path_for(f)
+            # Metadata: set lookup, no syscall
+            file_json = f"{f.stem}_backpack.json"
+            f_has_json = file_json in _json_names
+            asset_meta = _load_meta_json(_json_dir / file_json, AssetMeta) if f_has_json else AssetMeta()
+            # Preview: set lookup, no syscall
+            prev_name = f"{f.stem}_preview.jpg"
+            if f.parent == folder:
+                pcache = (_prev_dir / prev_name) if prev_name in _prev_names else None
+            else:
+                sp = _subdir_prev.get(f.parent, set())
+                sub_prev_dir = f.parent / PREVIEW_DIR_NAME
+                pcache = (sub_prev_dir / prev_name) if prev_name in sp else None
+
             asset = ScannedAsset(
                 path=f,
                 filename=f.name,
@@ -460,15 +516,14 @@ def _scan_material_folder(
                 asset_type="texture",
                 sub_type=sub_type or "",
                 meta=asset_meta,
-                has_json=json_path_for_file(f).exists(),
+                has_json=f_has_json,
                 material_folder=folder.name,
-                preview_cache=pcache if pcache.exists() else None,
+                preview_cache=pcache,
             )
             mat.maps.append(asset)
 
     mat.preview_path = preview_path
 
-    # If no preview found, try albedo/diffuse
     if not mat.preview_path:
         for a in mat.maps:
             if a.sub_type in ("albedo", "diffuse"):
@@ -477,10 +532,9 @@ def _scan_material_folder(
         if not mat.preview_path and mat.maps:
             mat.preview_path = mat.maps[0].path
 
-    # Set material preview_cache from the preview image
     if mat.preview_path:
-        pcache = preview_path_for(mat.preview_path)
-        mat.preview_cache = pcache if pcache.exists() else None
+        prev_name = f"{mat.preview_path.stem}_preview.jpg"
+        mat.preview_cache = (_prev_dir / prev_name) if prev_name in _prev_names else None
 
     return mat
 
