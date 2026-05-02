@@ -535,6 +535,10 @@ class AssetBrowser(QListView):
         rating changes, filter toggles) to avoid re-triggering the pop-in.
         """
         self._hide_preview()
+        # Drop queued decode jobs from the previous folder so worker threads
+        # focus immediately on thumbnails for the new content.
+        if animate:
+            self.delegate.cancel_pending()
         self._current_materials = materials
         self._current_assets = assets
         self._rebuild_model(animate=animate)

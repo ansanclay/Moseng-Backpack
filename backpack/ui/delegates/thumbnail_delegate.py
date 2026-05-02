@@ -130,6 +130,7 @@ class ThumbnailDelegate(QStyledItemDelegate):
 
         self._signals  = _Signals()
         self._pending: set[str] = set()
+        self._priority: int = 0   # monotonically increasing; latest request = highest
         self._signals.ready.connect(self._on_image_ready)
 
         self._pool = QThreadPool()
@@ -234,11 +235,25 @@ class ThumbnailDelegate(QStyledItemDelegate):
             QPixmapCache.insert(sized_key, scaled)
             return scaled
 
-        # Not decoded yet — submit job
+        # Not decoded yet — submit with ever-increasing priority so the most
+        # recently *visible* item always runs before older queued items.
         if path not in self._pending:
             self._pending.add(path)
-            self._pool.start(_DecodeJob(path, path, _THUMB_MAX, self._signals))
+            self._priority += 1
+            self._pool.start(
+                _DecodeJob(path, path, _THUMB_MAX, self._signals),
+                self._priority,
+            )
         return None
+
+    def cancel_pending(self) -> None:
+        """Drop queued-but-not-yet-started jobs (e.g. on folder navigation).
+
+        Jobs already running complete normally; their results are dropped if
+        the path is no longer in the model.
+        """
+        self._pool.clear()   # removes queued jobs that haven't started
+        self._pending.clear()
 
     # Paint
 
