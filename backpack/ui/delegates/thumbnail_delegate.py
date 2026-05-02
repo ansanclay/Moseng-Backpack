@@ -134,7 +134,8 @@ class ThumbnailDelegate(QStyledItemDelegate):
         self._signals.ready.connect(self._on_image_ready)
 
         self._pool = QThreadPool()
-        self._pool.setMaxThreadCount(max(2, min(4, QThread.idealThreadCount() // 2)))
+        # Image decoding is mostly I/O + libjpeg — scales well with more threads.
+        self._pool.setMaxThreadCount(max(4, min(8, QThread.idealThreadCount())))
 
         QPixmapCache.setCacheLimit(_CACHE_MB * 1024)
 
@@ -245,6 +246,27 @@ class ThumbnailDelegate(QStyledItemDelegate):
                 self._priority,
             )
         return None
+
+    def prefetch(self, path: str) -> None:
+        """Submit a decode job immediately without waiting for paint().
+
+        Called for items that are about to be visible so their thumbnails
+        start loading before the first paintEvent fires.
+        """
+        if not path:
+            return
+        th = int(self.card_height * 0.68)
+        tw = self.card_width - 2
+        # Skip if already cached at display size or full size
+        if QPixmapCache.find(f"{path}\x00{tw}x{th}") or QPixmapCache.find(path):
+            return
+        if path not in self._pending:
+            self._pending.add(path)
+            self._priority += 1
+            self._pool.start(
+                _DecodeJob(path, path, _THUMB_MAX, self._signals),
+                self._priority,
+            )
 
     def cancel_pending(self) -> None:
         """Drop queued-but-not-yet-started jobs (e.g. on folder navigation).

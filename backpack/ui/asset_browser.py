@@ -671,10 +671,24 @@ class AssetBrowser(QListView):
         if all_rows:
             self._model.invisibleRootItem().appendRows(all_rows)
             if animate:
-                # Only animate real content rows; spacers are invisible
                 content_rows = [i for i, it in enumerate(all_rows)
                                 if not it.data(SPACER_ROLE)]
                 self.delegate.start_animations(content_rows)
+
+            # Pre-fetch thumbnails for the first visible page immediately —
+            # before paint() is called — so images start decoding right away.
+            cols          = self._col_count()
+            visible_rows  = max(2, self.viewport().height() // max(1, self.gridSize().height()) + 1)
+            limit         = cols * visible_rows
+            fetched       = 0
+            for item in all_rows:
+                if fetched >= limit:
+                    break
+                if not item.data(SPACER_ROLE):
+                    path = item.data(Qt.UserRole + 1)
+                    if path:
+                        self.delegate.prefetch(path)
+                        fetched += 1
 
     def toggle_material_expand(self, mat: ScannedMaterial):
         """Toggle expansion of a material folder."""
