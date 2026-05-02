@@ -47,7 +47,7 @@ class SearchBar(QWidget):
                 border: 1px solid #2a2d35; border-radius: 6px;
                 font-size: 12px; padding: 4px 12px;
             }
-            QPushButton:hover { color: #d4d6db; border-color: #4a9eff; }
+            QPushButton:hover { color: #d4d6db; border-color: #002aff; }
         """)
         self.settings_btn.clicked.connect(self.settings_requested.emit)
         layout.addWidget(self.settings_btn)
@@ -79,7 +79,7 @@ class SearchBar(QWidget):
                     font-size: 12px; font-weight: 500;
                 }
                 QPushButton:hover { color: #d4d6db; background-color: #23262e; }
-                QPushButton:checked { background-color: #4a9eff; color: #ffffff; font-weight: 600; }
+                QPushButton:checked { background-color: #002aff; color: #ffffff; font-weight: 600; }
             """)
             self.type_group.addButton(btn)
             layout.addWidget(btn)
@@ -88,18 +88,18 @@ class SearchBar(QWidget):
 
         layout.addSpacing(8)
 
-        # Refresh button
-        self.refresh_btn = QPushButton("  Refresh")
-        self.refresh_btn.setFixedHeight(34)
-        self.refresh_btn.setMinimumWidth(90)
+        # Refresh button — square icon
+        self.refresh_btn = QPushButton("\u21bb")
+        self.refresh_btn.setFixedSize(34, 34)
         self.refresh_btn.setToolTip("Refresh & sync JSON files + previews")
         self.refresh_btn.setStyleSheet("""
             QPushButton {
                 background: #23262e; color: #8b8e96;
                 border: 1px solid #2a2d35; border-radius: 6px;
-                font-size: 12px; padding: 4px 12px;
+                font-size: 16px;
             }
-            QPushButton:hover { color: #d4d6db; border-color: #4a9eff; }
+            QPushButton:hover { color: #d4d6db; border-color: #002aff; }
+            QPushButton:pressed { color: #002aff; }
         """)
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
         layout.addWidget(self.refresh_btn)
@@ -109,15 +109,6 @@ class SearchBar(QWidget):
         self.import_btn.setObjectName("primaryBtn")
         self.import_btn.setFixedHeight(34)
         self.import_btn.setMinimumWidth(90)
-        self.import_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4a9eff; color: #ffffff;
-                border: none; border-radius: 6px;
-                font-size: 12px; font-weight: 600; padding: 4px 16px;
-            }
-            QPushButton:hover { background-color: #5aabff; }
-            QPushButton:pressed { background-color: #3a8eef; }
-        """)
         self.import_btn.clicked.connect(self.import_requested.emit)
         layout.addWidget(self.import_btn)
 

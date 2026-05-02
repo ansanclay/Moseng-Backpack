@@ -56,7 +56,7 @@ def get_or_create_tag(
 
     If head_asset_path is given and the tag has no head yet, set it.
     """
-    from backpack.constants import random_tag_color
+    from backpack.constants import tag_color_for_name
     from backpack.core.preview import preview_path_for
 
     if tag_name in registry:
@@ -70,8 +70,8 @@ def get_or_create_tag(
                 info.head_preview = str(pp.relative_to(backpack_root)).replace("\\", "/")
         return info
 
-    # Create new
-    color = random_tag_color(accent_color)
+    # Create new — use deterministic color derived from the tag name
+    color = tag_color_for_name(tag_name)
     info = TagInfo(color=color)
     if head_asset_path:
         rel = str(head_asset_path.relative_to(backpack_root)).replace("\\", "/")

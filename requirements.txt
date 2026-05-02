@@ -1,4 +1,10 @@
 PySide6>=6.5
+PySide6-WebEngine>=6.5
 Pillow>=10.0
 imageio>=2.31
 numpy
+
+# Web backend
+fastapi>=0.111
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

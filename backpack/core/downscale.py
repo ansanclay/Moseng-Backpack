@@ -8,15 +8,33 @@ import re
 from pathlib import Path
 from PIL import Image
 
-# Quixel resolution pattern: _4K_, _2K_, _1K_ etc.
-_RES_PATTERN = re.compile(r"_(\d+)K_", re.I)
+# Quixel resolution pattern: _4K_, _2K_, _1K_, _512_ etc.
+_RES_PATTERN = re.compile(r"_(\d+K|512)_", re.I)
 
-# Resolution targets
+# Resolution targets (tag → max pixel dimension)
 RESOLUTION_MAP = {
-    "4K": (4096, 4096),
-    "2K": (2048, 2048),
-    "1K": (1024, 1024),
+    "8K":  (8192, 8192),
+    "4K":  (4096, 4096),
+    "2K":  (2048, 2048),
+    "1K":  (1024, 1024),
+    "512": (512,  512),
 }
+
+# "Copy as Half Resolution" chain
+_HALF_STEP = {"8K": "4K", "4K": "2K", "2K": "1K", "1K": "512"}
+
+
+def half_resolution(res: str) -> str | None:
+    """Return the next-smaller resolution tag, or None if already at minimum."""
+    return _HALF_STEP.get(res.upper())
+
+
+def _res_px(tag: str) -> int:
+    """Convert a resolution tag to its pixel count for numeric comparison."""
+    tag = tag.upper()
+    if tag.endswith("K"):
+        return int(tag[:-1]) * 1024
+    return int(tag)   # e.g. "512" → 512
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".exr"}
 
@@ -24,7 +42,7 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".exr"}
 def detect_resolution_tag(filename: str) -> str | None:
     """Extract the resolution tag (e.g. '4K') from a filename."""
     m = _RES_PATTERN.search(filename)
-    return f"{m.group(1)}K" if m else None
+    return m.group(1).upper() if m else None
 
 
 def detect_resolution_from_image(filepath: Path) -> str | None:
@@ -68,7 +86,7 @@ def get_available_resolutions(material_folder: Path) -> list[str]:
                     found.add(tag)
                 break
 
-    order = ["1K", "2K", "4K", "8K"]
+    order = ["512", "1K", "2K", "4K", "8K"]
     return [r for r in order if r in found]
 
 
@@ -114,9 +132,7 @@ def downscale_material(material_folder: Path, target_res: str) -> tuple[int, lis
             continue
 
         # Only downscale from higher resolution
-        src_val = int(src_tag.replace("K", ""))
-        tgt_val = int(target_res.replace("K", ""))
-        if src_val <= tgt_val:
+        if _res_px(src_tag) <= _res_px(target_res):
             continue
 
         target_name = downscale_target_name(f.name, target_res)

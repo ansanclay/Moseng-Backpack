@@ -2,7 +2,7 @@
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QSpinBox, QGroupBox, QColorDialog,
+    QComboBox, QSpinBox, QGroupBox, QColorDialog, QCheckBox,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPixmap, QIcon
@@ -50,9 +50,9 @@ class SettingsDialog(QDialog):
         appear_box = QGroupBox("Appearance")
         appear_layout = QVBoxLayout(appear_box)
 
-        # Accent color
+        # Primary color
         color_row = QHBoxLayout()
-        color_row.addWidget(QLabel("Accent color:"))
+        color_row.addWidget(QLabel("Primary color:"))
         self.color_btn = QPushButton()
         self.color_btn.setFixedSize(36, 28)
         self.color_btn.clicked.connect(self._pick_color)
@@ -84,6 +84,19 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(appear_box)
 
+        # ── Integrations ──
+        integ_box = QGroupBox("Integrations")
+        integ_layout = QVBoxLayout(integ_box)
+
+        self.quixel_check = QCheckBox("Enable Quixel / Megascans folder")
+        self.quixel_check.setChecked(self.settings.quixel_enabled)
+        self.quixel_check.setToolTip(
+            "Creates BACKPACK/Quixel/Downloaded/ on disk and shows it in the folder tree."
+        )
+        integ_layout.addWidget(self.quixel_check)
+
+        layout.addWidget(integ_box)
+
         # ── Buttons ──
         layout.addStretch()
         btn_row = QHBoxLayout()
@@ -101,7 +114,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _pick_color(self):
-        color = QColorDialog.getColor(QColor(self._color), self, "Select Accent Color")
+        color = QColorDialog.getColor(QColor(self._color), self, "Select Primary Color")
         if color.isValid():
             self._color = color.name()
             self._update_color_btn()
@@ -120,5 +133,6 @@ class SettingsDialog(QDialog):
         self.settings.accent_color = self._color
         self.settings.font_family = self.font_combo.currentText()
         self.settings.font_size = self.size_spin.value()
+        self.settings.quixel_enabled = self.quixel_check.isChecked()
         self.settings_changed.emit()
         self.accept()

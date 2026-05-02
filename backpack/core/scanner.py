@@ -20,6 +20,7 @@ from backpack.core.metadata import (
     AssetMeta, MaterialMeta,
 )
 from backpack.core.preview import preview_path_for, PREVIEW_DIR_NAME
+from backpack.core.metadata import JSON_DIR_NAME
 
 
 @dataclass
@@ -51,12 +52,12 @@ class ScannedMaterial:
 
 
 # File extensions by category
-_TEXTURE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".exr", ".tx", ".rat"}
+_TEXTURE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".exr", ".tx"}
 _HDRI_EXTS = {".hdr", ".exr"}
 _GOBO_EXTS = {".ies"}
 _MODEL_EXTS = {".obj", ".fbx", ".abc", ".usd", ".usda", ".usdc", ".usdz", ".bgeo"}
 _SCENE_EXTS = {".hip", ".hipnc", ".hiplc", ".blend", ".ma", ".mb"}
-_SKIP_EXTS = {".json", ".db", ".db-wal", ".db-shm"}
+_SKIP_EXTS = {".json", ".db", ".db-wal", ".db-shm", ".rat"}
 
 
 def scan_backpack(backpack_root: Path) -> tuple[list[ScannedMaterial], list[ScannedAsset]]:
@@ -138,7 +139,7 @@ def _scan_material_folder(
     for f in sorted(folder.iterdir()):
         if not f.is_file():
             continue
-        if f.parent.name == PREVIEW_DIR_NAME:
+        if f.parent.name in (PREVIEW_DIR_NAME, JSON_DIR_NAME):
             continue
         ext = f.suffix.lower()
         if ext in _SKIP_EXTS:
@@ -157,6 +158,7 @@ def _scan_material_folder(
         if is_preview and ext in _TEXTURE_EXTS:
             preview_path = f
             mat.meta.preview_file = f.name
+            continue  # preview-only file — not a map
 
         if ext in _TEXTURE_EXTS or ext in _HDRI_EXTS:
             asset_meta = read_asset_meta(f)
@@ -167,7 +169,7 @@ def _scan_material_folder(
                 filename=f.name,
                 rel_path=str(f.relative_to(backpack_root)).replace("\\", "/"),
                 asset_type="texture",
-                sub_type=sub_type or ("preview" if is_preview else ""),
+                sub_type=sub_type or "",
                 meta=asset_meta,
                 has_json=json_path_for_file(f).exists(),
                 material_folder=folder.name,
@@ -244,9 +246,91 @@ def _is_hdri_name(stem: str) -> bool:
     return bool(re.search(r"(hdri|hdr|env|sky|panorama|pano|dome)", stem, re.I))
 
 
-def sync_json_files(backpack_root: Path) -> tuple[int, int]:
-    """Sync: create missing JSONs, remove orphaned JSONs.
+def scan_folder_node(node, backpack_root: Path) -> tuple[list[ScannedMaterial], list[ScannedAsset]]:
+    """Scan a FolderNode and return (materials, assets).
 
+    scan_mode:
+      "materials" — each immediate subfolder is a ScannedMaterial
+      "texture"   — all files (recursive) are texture ScannedAssets
+      "gobo"      — all files (recursive) are gobo ScannedAssets
+      "model"     — all files (recursive, including subfolders) are model ScannedAssets
+      "hdri"      — all files are HDRI ScannedAssets
+      "none"      — return empty (category node)
+    """
+    from backpack.core.folder_model import FolderNode  # avoid circular at module level
+
+    materials: list[ScannedMaterial] = []
+    assets: list[ScannedAsset] = []
+
+    folder: Path = node.disk_path
+    mode: str = node.scan_mode
+
+    if mode == "none" or not folder.exists():
+        return materials, assets
+
+    if mode == "materials":
+        for sub in sorted(folder.iterdir()):
+            if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            mat = _scan_material_folder(sub, folder.name.lower(), backpack_root)
+            if mat and mat.maps:
+                materials.append(mat)
+
+    else:
+        # Loose file scan — determine asset type
+        type_map = {
+            "texture": "texture",
+            "gobo":    "gobo",
+            "model":   "model",
+            "hdri":    "hdri",
+        }
+        default_type = type_map.get(mode, "texture")
+
+        for f in sorted(folder.rglob("*")):
+            if not f.is_file():
+                continue
+            if f.suffix.lower() in _SKIP_EXTS:
+                continue
+            if f.name.startswith("."):
+                continue
+            if PREVIEW_DIR_NAME in f.parts:
+                continue
+            asset = _scan_single_file(f, default_type, backpack_root)
+            if asset:
+                assets.append(asset)
+
+    return materials, assets
+
+
+def scan_folder_recursive(
+    node, backpack_root: Path
+) -> tuple[list[ScannedMaterial], list[ScannedAsset]]:
+    """Scan a node AND all its leaf descendants (for category/parent nodes).
+
+    Category nodes (scan_mode="none") aggregate results from all children.
+    Leaf nodes are scanned directly via scan_folder_node.
+    """
+    materials: list[ScannedMaterial] = []
+    assets: list[ScannedAsset] = []
+
+    if node.scan_mode != "none":
+        m, a = scan_folder_node(node, backpack_root)
+        materials.extend(m)
+        assets.extend(a)
+
+    for child in node.children:
+        m, a = scan_folder_recursive(child, backpack_root)
+        materials.extend(m)
+        assets.extend(a)
+
+    return materials, assets
+
+
+def sync_json_files(backpack_root: Path, since: float | None = None) -> tuple[int, int]:
+    """Sync: create missing JSONs, remove orphaned JSONs under the entire BACKPACK tree.
+
+    If ``since`` is given (unix timestamp), skip folders whose mtime is older —
+    meaning no files were added or changed there.
     Returns (created_count, removed_count).
     """
     created = 0
@@ -255,66 +339,94 @@ def sync_json_files(backpack_root: Path) -> tuple[int, int]:
     if not backpack_root.exists():
         return created, removed
 
-    # Materials
-    mat_root = backpack_root / "Materials"
-    if mat_root.exists():
-        for source_dir in mat_root.iterdir():
-            if not source_dir.is_dir():
-                continue
-            for mat_dir in source_dir.iterdir():
-                if not mat_dir.is_dir() or mat_dir.name == PREVIEW_DIR_NAME:
+    from backpack.core.folder_model import build_folder_tree
+
+    root_node = build_folder_tree(backpack_root, quixel_enabled=True)
+
+    def _folder_changed(folder: Path) -> bool:
+        """True if the folder itself was modified after ``since``."""
+        if since is None or not folder.exists():
+            return True
+        return folder.stat().st_mtime > since
+
+    def _walk(node):
+        nonlocal created, removed
+        if node.scan_mode == "none":
+            for child in node.children:
+                _walk(child)
+            return
+
+        folder: Path = node.disk_path
+        if not folder.exists():
+            for child in node.children:
+                _walk(child)
+            return
+
+        if node.scan_mode == "materials":
+            for mat_dir in folder.iterdir():
+                if not mat_dir.is_dir() or mat_dir.name.startswith(".") or mat_dir.name == PREVIEW_DIR_NAME:
                     continue
-                # Ensure material json exists
+                # Skip material folder if unchanged
+                if not _folder_changed(mat_dir):
+                    continue
                 jp = json_path_for_material(mat_dir)
                 if not jp.exists():
                     write_material_meta(mat_dir, MaterialMeta())
                     created += 1
-
-                # Check files inside material
                 for f in mat_dir.iterdir():
-                    if f.is_file() and f.suffix.lower() not in _SKIP_EXTS and f.parent.name != PREVIEW_DIR_NAME:
-                        fjp = json_path_for_file(f)
-                        if not fjp.exists():
-                            write_asset_meta(f, AssetMeta(asset_type="texture",
-                                                          sub_type=_detect_sub_type(f.stem)))
-                            created += 1
-
-        # Remove orphaned JSONs in Materials
-        for jp in mat_root.rglob("*_backpack.json"):
-            # Check if the parent asset/folder still exists
-            stem = jp.stem.replace("_backpack", "")
-            parent = jp.parent
-            # Could be a folder json or file json
-            if jp.name == f"{parent.name}_backpack.json":
-                continue  # folder-level json, valid if folder exists
-            # File-level json: check if any file with that stem exists
-            matches = list(parent.glob(f"{stem}.*"))
-            matches = [m for m in matches if m.suffix.lower() != ".json"]
-            if not matches:
-                jp.unlink()
-                removed += 1
-
-    # Textures, Gobo, Other
-    for folder_name in ("Textures", "Gobo", "Other"):
-        folder = backpack_root / folder_name
-        if not folder.exists():
-            continue
-        for f in folder.rglob("*"):
-            if f.is_file() and f.suffix.lower() not in _SKIP_EXTS and not f.name.startswith(".") and PREVIEW_DIR_NAME not in f.parts:
+                    if not f.is_file():
+                        continue
+                    if f.suffix.lower() in _SKIP_EXTS:
+                        continue
+                    if PREVIEW_DIR_NAME in f.parts or JSON_DIR_NAME in f.parts:
+                        continue
+                    fjp = json_path_for_file(f)
+                    if not fjp.exists():
+                        write_asset_meta(f, AssetMeta(asset_type="texture",
+                                                      sub_type=_detect_sub_type(f.stem)))
+                        created += 1
+        else:
+            # Skip entire folder if unchanged
+            if not _folder_changed(folder):
+                for child in node.children:
+                    _walk(child)
+                return
+            dtype = node.scan_mode if node.scan_mode in ("texture", "gobo", "model", "hdri") else "texture"
+            for f in folder.rglob("*"):
+                if not f.is_file():
+                    continue
+                if f.suffix.lower() in _SKIP_EXTS or f.name.startswith("."):
+                    continue
+                if PREVIEW_DIR_NAME in f.parts or JSON_DIR_NAME in f.parts:
+                    continue
                 fjp = json_path_for_file(f)
                 if not fjp.exists():
-                    dtype = "gobo" if folder_name == "Gobo" else ("texture" if folder_name == "Textures" else "other")
                     write_asset_meta(f, AssetMeta(asset_type=dtype,
                                                   sub_type=_detect_sub_type(f.stem)))
                     created += 1
 
-        # Remove orphaned JSONs
-        for jp in folder.rglob("*_backpack.json"):
-            stem = jp.stem.replace("_backpack", "")
-            matches = list(jp.parent.glob(f"{stem}.*"))
-            matches = [m for m in matches if m.suffix.lower() != ".json"]
-            if not matches:
-                jp.unlink()
-                removed += 1
+        # Remove orphaned JSONs — only when folder was changed or full sync
+        # JSONs now live in .json/ subfolders; source files are one level up
+        if _folder_changed(folder):
+            for json_dir in folder.rglob(JSON_DIR_NAME):
+                if not json_dir.is_dir():
+                    continue
+                source_dir = json_dir.parent
+                for jp in json_dir.glob("*_backpack.json"):
+                    stem = jp.stem.replace("_backpack", "")
+                    # Material-level JSON: stem matches the parent folder name
+                    if stem == source_dir.name:
+                        continue
+                    # Asset-level JSON: source file must exist in source_dir
+                    matches = [m for m in source_dir.iterdir()
+                               if m.is_file() and m.stem == stem
+                               and m.suffix.lower() != ".json"]
+                    if not matches:
+                        jp.unlink()
+                        removed += 1
 
+        for child in node.children:
+            _walk(child)
+
+    _walk(root_node)
     return created, removed

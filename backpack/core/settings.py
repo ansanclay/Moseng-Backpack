@@ -12,13 +12,15 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 @dataclass
 class AppSettings:
     drive_letter: str = ""
-    accent_color: str = "#4a9eff"
+    accent_color: str = "#002aff"
     font_family: str = "Segoe UI"
     font_size: int = 10
     grid_card_size: int = 200     # default card width in pixels
     last_type_filter: str = ""
     window_width: int = 1400
     window_height: int = 850
+    quixel_enabled: bool = False
+    last_folder_path: str = ""    # disk_path of last selected FolderNode
 
 
 def load_settings() -> AppSettings:

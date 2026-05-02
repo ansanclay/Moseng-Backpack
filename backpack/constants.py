@@ -34,7 +34,7 @@ BLUE_PALETTE = [
     "#304ffe",  # deep indigo
     "#1a73e8",  # google blue
     "#0d6efd",  # bootstrap blue
-    "#4a9eff",  # app accent
+    "#002aff",  # app accent
     "#5c9ce6",  # soft blue
 ]
 
@@ -44,23 +44,35 @@ def random_blue() -> str:
     return random.choice(BLUE_PALETTE)
 
 
-def random_tag_color(accent_hex: str = "#4a9eff") -> str:
-    """Generate a random tag color in the same hue family as the accent color.
+# ── Deterministic muted tag colors (v2 design) ──────────────────────────────
 
-    Saturation: 30-100%, Brightness: 20-70% (ensures readable white text).
+def tag_hue(name: str) -> int:
+    """Deterministic hue 0–359 from tag name (matches v2 design hash function)."""
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) % 360
+    return h
+
+
+def tag_color_for_name(name: str) -> str:
+    """Muted, sophisticated tag color derived from name.
+
+    Approximates v2 design oklch(68% 0.12 hue):
+    HLS(hue, 0.68 lightness, 0.25 saturation) — readable on dark bg, not garish.
     """
-    # Parse accent hex to get hue
-    accent_hex = accent_hex.lstrip("#")
-    r, g, b = int(accent_hex[0:2], 16), int(accent_hex[2:4], 16), int(accent_hex[4:6], 16)
-    h, _, _ = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+    r, g, b = colorsys.hls_to_rgb(tag_hue(name) / 360.0, 0.68, 0.25)
+    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
-    # Slight hue variation (±0.05)
-    h = (h + random.uniform(-0.05, 0.05)) % 1.0
-    s = random.uniform(0.30, 1.00)
-    v = random.uniform(0.20, 0.70)
 
-    r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v)
-    return f"#{int(r2*255):02x}{int(g2*255):02x}{int(b2*255):02x}"
+def random_tag_color(accent_hex: str = "#002aff") -> str:
+    """Generate a tag color. Delegates to deterministic tag_color_for_name.
+
+    accent_hex kept for API compatibility; the color is now name-independent
+    so callers should prefer tag_color_for_name(tag_name) directly.
+    """
+    # Return a deterministic blue-family color as a neutral fallback
+    r, g, b = colorsys.hls_to_rgb(230 / 360.0, 0.68, 0.25)
+    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
 
 # ── Quixel Bridge-style surface categories ──
@@ -138,7 +150,6 @@ EXTENSION_MAP = {
     ".png": "texture", ".jpg": "texture", ".jpeg": "texture",
     ".tif": "texture", ".tiff": "texture", ".tga": "texture",
     ".bmp": "texture", ".exr": "texture", ".tx": "texture",
-    ".rat": "texture",
     ".hdr": "hdri",
     ".obj": "model", ".fbx": "model", ".abc": "model",
     ".usd": "model", ".usda": "model", ".usdc": "model",
@@ -207,7 +218,7 @@ DEFAULT_TAGS = {
     "Painted": "#6495ed",
     "Weathered": "#304ffe",
     "Clean": "#1a73e8",
-    "Organic": "#4a9eff",
+    "Organic": "#002aff",
     "Favorites": "#f59e0b",
 }
 

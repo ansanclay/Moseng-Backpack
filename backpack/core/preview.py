@@ -44,21 +44,33 @@ def ensure_preview(filepath: Path, force: bool = False) -> Path | None:
         pdir = ppath.parent
         pdir.mkdir(exist_ok=True)
 
-        img = Image.open(str(filepath))
-        img.thumbnail(PREVIEW_SIZE, Image.LANCZOS)
+        ext = filepath.suffix.lower()
+        if ext in (".exr", ".hdr"):
+            from backpack.utils.image_utils import _generate_hdr_thumbnail
+            result = _generate_hdr_thumbnail(filepath, ppath, PREVIEW_SIZE)
+            return result
+        else:
+            img = Image.open(str(filepath))
+            img.thumbnail(PREVIEW_SIZE, Image.LANCZOS)
 
-        # Convert to RGB for JPEG
-        if img.mode in ("RGBA", "P", "LA", "I", "F"):
-            img = img.convert("RGB")
+            # Convert to RGB for JPEG
+            if img.mode in ("RGBA", "P", "LA", "I", "F"):
+                img = img.convert("RGB")
 
-        img.save(str(ppath), "JPEG", quality=85)
-        return ppath
+            img.save(str(ppath), "JPEG", quality=85)
+            return ppath
     except Exception:
         return None
 
 
-def generate_previews_for_folder(folder: Path) -> int:
-    """Generate previews for all images in a folder. Returns count generated."""
+def generate_previews_for_folder(folder: Path, since: float | None = None) -> int:
+    """Generate previews for all images in a folder. Returns count generated.
+
+    If ``since`` is given (unix timestamp), skip the folder entirely when its
+    mtime is older than that timestamp — meaning nothing was added/changed.
+    """
+    if since is not None and folder.exists() and folder.stat().st_mtime <= since:
+        return 0
     count = 0
     for f in folder.iterdir():
         if f.is_file() and f.suffix.lower() in _IMAGE_EXTS:
@@ -67,9 +79,10 @@ def generate_previews_for_folder(folder: Path) -> int:
     return count
 
 
-def sync_previews(backpack_root: Path) -> int:
+def sync_previews(backpack_root: Path, since: float | None = None) -> int:
     """Generate preview caches for the entire BACKPACK tree.
 
+    If ``since`` is given, only process folders modified after that timestamp.
     Returns total number of previews generated/updated.
     """
     total = 0
@@ -77,23 +90,31 @@ def sync_previews(backpack_root: Path) -> int:
     if not backpack_root.exists():
         return total
 
-    # Materials - each material folder gets previews
-    mat_root = backpack_root / "Materials"
-    if mat_root.exists():
-        for source_dir in mat_root.iterdir():
-            if not source_dir.is_dir():
-                continue
-            for mat_dir in source_dir.iterdir():
-                if not mat_dir.is_dir() or mat_dir.name.startswith("."):
-                    continue
-                total += generate_previews_for_folder(mat_dir)
+    from backpack.core.folder_model import build_folder_tree
 
-    # Textures, Gobo, Other - flat folders
-    for folder_name in ("Textures", "Gobo", "Other"):
-        folder = backpack_root / folder_name
-        if folder.exists():
-            total += generate_previews_for_folder(folder)
+    root_node = build_folder_tree(backpack_root, quixel_enabled=True)
 
+    def _walk(node):
+        nonlocal total
+        if node.scan_mode == "none":
+            for child in node.children:
+                _walk(child)
+            return
+        folder: Path = node.disk_path
+        if not folder.exists():
+            for child in node.children:
+                _walk(child)
+            return
+        if node.scan_mode == "materials":
+            for mat_dir in folder.iterdir():
+                if mat_dir.is_dir() and not mat_dir.name.startswith("."):
+                    total += generate_previews_for_folder(mat_dir, since=since)
+        else:
+            total += generate_previews_for_folder(folder, since=since)
+        for child in node.children:
+            _walk(child)
+
+    _walk(root_node)
     return total
 
 

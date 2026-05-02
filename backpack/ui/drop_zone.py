@@ -42,6 +42,9 @@ class DropOverlay(QWidget):
         self.hide()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasFormat("application/x-backpack-internal"):
+            event.ignore()
+            return
         if event.mimeData().hasUrls():
             self._hide_timer.stop()
             event.acceptProposedAction()
@@ -71,10 +74,10 @@ class DropOverlay(QWidget):
 
         # Dashed border inset
         r = self.rect().adjusted(32, 32, -32, -32)
-        pen = QPen(QColor("#4a9eff"), 3, Qt.DashLine)
+        pen = QPen(QColor("#002aff"), 3, Qt.DashLine)
         pen.setDashPattern([8, 6])
         painter.setPen(pen)
-        painter.setBrush(QColor(74, 158, 255, 15))
+        painter.setBrush(QColor(0, 42, 255, 15))
         path = QPainterPath()
         path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), 20, 20)
         painter.drawPath(path)
@@ -82,7 +85,7 @@ class DropOverlay(QWidget):
         # Icon
         icon_font = QFont("Segoe UI", 48, QFont.Light)
         painter.setFont(icon_font)
-        painter.setPen(QColor("#4a9eff"))
+        painter.setPen(QColor("#002aff"))
         icon_r = r.adjusted(0, 0, 0, -40)
         painter.drawText(icon_r, Qt.AlignCenter, "\u2b07")
 

@@ -184,11 +184,11 @@ class ImportDialog(QDialog):
             if self.chosen_type == "material":
                 self._import_as_material()
             elif self.chosen_type == "texture":
-                self._import_to_folder("Textures")
+                self._import_to_folder("Images/Textures")
             elif self.chosen_type == "gobo":
-                self._import_to_folder("Gobo")
+                self._import_to_folder("Images/Gobos")
             else:
-                self._import_to_folder("Other")
+                self._import_to_folder("Images/Textures")
 
             self.accept()
         except Exception as e:
@@ -198,8 +198,7 @@ class ImportDialog(QDialog):
 
     def _import_as_material(self):
         """Import as material - each source folder becomes a material folder."""
-        source_label = self.chosen_source.upper() if self.chosen_source != "other" else "Other"
-        dest_base = self.backpack_root / "Materials" / source_label
+        dest_base = self.backpack_root / "Materials" / "PBR_Materials"
 
         total = len(self._files)
         self.progress.setMaximum(total)
