@@ -141,34 +141,52 @@ def _walk_for_materials(folder: Path, out: list) -> None:
 def _is_model_asset_dir(folder: Path) -> bool:
     """True if *folder* is a leaf 3-D asset folder (not a category container).
 
-    Same heuristic as _is_material_dir but extended to model file types:
-    1. If a direct child is a model/scene file → asset folder.
-    2. If any non-skip subdir itself contains a model or image file → container.
-    3. If the folder has at least one direct image/model file and no sub-asset
-       subdirs → asset folder.
+    Rules (checked in order):
+    1. If the folder has a direct model file (.fbx / .obj / .abc / …) → True.
+       This is definitive: bundled Textures/ or Meshes/ subdirectories are NOT
+       treated as evidence that the folder is a container.
+    2. If no direct model file exists but a non-skip subdir contains model or
+       image files → this folder is a container → False.
+    3. If the folder has direct image files only (and no sub-asset subdirs) →
+       True (e.g. foliage billboard / sprite packs).
+    4. Otherwise → False.
     """
     try:
         entries = list(folder.iterdir())
     except PermissionError:
         return False
 
-    has_direct_assets = False
+    has_direct_model = False
+    has_direct_image = False
+
     for entry in entries:
         if entry.name.startswith(".") or entry.name in _SCAN_SKIP_DIRS:
             continue
         if entry.is_file():
-            if entry.suffix.lower() in _MODEL_ASSET_EXTS:
-                has_direct_assets = True
-        elif entry.is_dir():
-            # Peek inside — if it has any relevant file this folder is a container
+            ext = entry.suffix.lower()
+            if ext in _MODEL_EXTS or ext in _SCENE_EXTS:
+                has_direct_model = True
+                break   # definitive — no need to look further
+            if ext in _ALL_IMAGE_EXTS:
+                has_direct_image = True
+
+    # Rule 1: direct model file → always an asset folder
+    if has_direct_model:
+        return True
+
+    # Rules 2 / 3: no model file → check subdirs
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name in _SCAN_SKIP_DIRS:
+            continue
+        if entry.is_dir():
             try:
                 for sub in entry.iterdir():
                     if sub.is_file() and sub.suffix.lower() in _MODEL_ASSET_EXTS:
-                        return False   # sub-asset found → we are a container
+                        return False   # subdir has assets → we are a container
             except PermissionError:
                 pass
 
-    return has_direct_assets
+    return has_direct_image   # image-only pack (no sub-asset subdirs)
 
 
 def _collect_model_asset_dirs(search_root: Path) -> list[Path]:
