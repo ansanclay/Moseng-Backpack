@@ -60,6 +60,66 @@ _MODEL_EXTS = {".obj", ".fbx", ".abc", ".usd", ".usda", ".usdc", ".usdz", ".bgeo
 _SCENE_EXTS = {".hip", ".hipnc", ".hiplc", ".blend", ".ma", ".mb"}
 _SKIP_EXTS = {".json", ".db", ".db-wal", ".db-shm", ".rat"}
 
+_SCAN_SKIP_DIRS = frozenset({PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"})
+_ALL_IMAGE_EXTS = _TEXTURE_EXTS | _HDRI_EXTS
+
+
+def _is_material_dir(folder: Path) -> bool:
+    """True if *folder* is a leaf material folder (not a category container).
+
+    A folder qualifies as a material folder when it:
+    - directly contains at least one image file, OR
+    - has immediate subdirectories whose names are PBR map keywords
+      (structured layout: Rock/Albedo/…, Rock/Normal/…)
+
+    Otherwise it is treated as a category/container and we recurse deeper.
+    """
+    try:
+        entries = list(folder.iterdir())
+    except PermissionError:
+        return False
+
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name in _SCAN_SKIP_DIRS:
+            continue
+        if entry.is_file() and entry.suffix.lower() in _ALL_IMAGE_EXTS:
+            return True   # direct texture → material folder
+        if entry.is_dir() and _detect_sub_type(entry.name):
+            return True   # PBR-keyword subfolder → structured material
+
+    return False
+
+
+def _collect_material_dirs(search_root: Path) -> list[Path]:
+    """Return all material folders inside *search_root* at any depth.
+
+    Category/container folders (no direct images, no PBR-keyword subfolders)
+    are recursed into transparently — so any nesting depth works:
+
+        Materials/PBR_Materials/SOURCE_Texturescom/Asphalt 01 [8K]/  → found
+        Materials/Quixel/Rock_Mossy/                                  → found
+        Materials/MyLib/Stone/Granite/Polished/                       → found
+    """
+    results: list[Path] = []
+    _walk_for_materials(search_root, results)
+    return results
+
+
+def _walk_for_materials(folder: Path, out: list) -> None:
+    if _is_material_dir(folder):
+        out.append(folder)
+        return   # don't recurse inside a material folder itself
+
+    try:
+        entries = list(folder.iterdir())
+    except PermissionError:
+        return
+
+    for entry in sorted(entries):
+        if entry.is_dir() and not entry.name.startswith(".") \
+                and entry.name not in _SCAN_SKIP_DIRS:
+            _walk_for_materials(entry, out)
+
 
 def scan_backpack(backpack_root: Path) -> tuple[list[ScannedMaterial], list[ScannedAsset]]:
     """Scan the entire BACKPACK folder tree.
@@ -73,16 +133,14 @@ def scan_backpack(backpack_root: Path) -> tuple[list[ScannedMaterial], list[Scan
     if not backpack_root.exists():
         return materials, loose_assets
 
-    # Scan Materials folder
+    # Scan Materials folder — recurse to any depth
     mat_root = backpack_root / "Materials"
     if mat_root.exists():
         for source_dir in sorted(mat_root.iterdir()):
-            if not source_dir.is_dir():
+            if not source_dir.is_dir() or source_dir.name.startswith("."):
                 continue
-            source_name = source_dir.name.lower()  # "QUIXEL", "Other", etc.
-            for mat_dir in sorted(source_dir.iterdir()):
-                if not mat_dir.is_dir():
-                    continue
+            source_name = source_dir.name.lower()
+            for mat_dir in _collect_material_dirs(source_dir):
                 mat = _scan_material_folder(mat_dir, source_name, backpack_root)
                 if mat and mat.maps:
                     materials.append(mat)
@@ -298,10 +356,8 @@ def scan_folder_node(node, backpack_root: Path) -> tuple[list[ScannedMaterial], 
         return materials, assets
 
     if mode == "materials":
-        for sub in sorted(folder.iterdir()):
-            if not sub.is_dir() or sub.name.startswith("."):
-                continue
-            mat = _scan_material_folder(sub, folder.name.lower(), backpack_root)
+        for mat_dir in _collect_material_dirs(folder):
+            mat = _scan_material_folder(mat_dir, folder.name.lower(), backpack_root)
             if mat and mat.maps:
                 materials.append(mat)
 
@@ -392,9 +448,8 @@ def sync_json_files(backpack_root: Path, since: float | None = None) -> tuple[in
             return
 
         if node.scan_mode == "materials":
-            for mat_dir in folder.iterdir():
-                if not mat_dir.is_dir() or mat_dir.name.startswith(".") or mat_dir.name == PREVIEW_DIR_NAME:
-                    continue
+            _SKIP_SYNC = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
+            for mat_dir in _collect_material_dirs(folder):
                 # Skip material folder if unchanged
                 if not _folder_changed(mat_dir):
                     continue
@@ -403,7 +458,6 @@ def sync_json_files(backpack_root: Path, since: float | None = None) -> tuple[in
                     write_material_meta(mat_dir, MaterialMeta())
                     created += 1
                 # Scan direct files + one subfolder level (mirrors _scan_material_folder)
-                _SKIP_SYNC = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
                 file_hint_pairs: list[tuple[Path, str]] = []
                 for entry in mat_dir.iterdir():
                     if entry.name.startswith(".") or entry.name in _SKIP_SYNC:
