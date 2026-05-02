@@ -65,8 +65,8 @@ class FolderNode:
 _QUIXEL_SUBDIRS = [
     # (disk_name, display_name, scan_mode)
     ("surface",       "Materials",      "materials"),
-    ("3d",            "Models",         "model"),
-    ("3dplant",       "Foliages",       "model"),
+    ("3d",            "Models",         "model_folder"),
+    ("3dplant",       "Foliages",       "model_folder"),
     ("atlas",         "Decals",         "texture"),
     ("brush",         "Brushes",        "texture"),
     ("smartmaterial", "Smart Materials","materials"),
@@ -89,8 +89,8 @@ _DEFAULT_TREE = [
         ("HDRI",     "hdri",    []),
     ]),
     ("Models", "Models", [
-        ("3D_Assets", "model", []),
-        ("Foliages",  "model", []),
+        ("3D_Assets", "model_folder", []),
+        ("Foliages",  "model_folder", []),
     ]),
 ]
 
@@ -225,7 +225,7 @@ def _infer_scan_mode(category_disk_name: str) -> str:
     m = {
         "Materials": "materials",
         "Images":    "texture",
-        "Models":    "model",
+        "Models":    "model_folder",
     }
     return m.get(category_disk_name, "texture")
 

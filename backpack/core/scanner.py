@@ -62,6 +62,7 @@ _SKIP_EXTS = {".json", ".db", ".db-wal", ".db-shm", ".rat"}
 
 _SCAN_SKIP_DIRS = frozenset({PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"})
 _ALL_IMAGE_EXTS = _TEXTURE_EXTS | _HDRI_EXTS
+_MODEL_ASSET_EXTS = _ALL_IMAGE_EXTS | _MODEL_EXTS | _SCENE_EXTS
 
 
 def _is_material_dir(folder: Path) -> bool:
@@ -131,6 +132,181 @@ def _walk_for_materials(folder: Path, out: list) -> None:
         if entry.is_dir() and not entry.name.startswith(".") \
                 and entry.name not in _SCAN_SKIP_DIRS:
             _walk_for_materials(entry, out)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3-D asset folder detection  (scan_mode="model_folder")
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_model_asset_dir(folder: Path) -> bool:
+    """True if *folder* is a leaf 3-D asset folder (not a category container).
+
+    Same heuristic as _is_material_dir but extended to model file types:
+    1. If a direct child is a model/scene file → asset folder.
+    2. If any non-skip subdir itself contains a model or image file → container.
+    3. If the folder has at least one direct image/model file and no sub-asset
+       subdirs → asset folder.
+    """
+    try:
+        entries = list(folder.iterdir())
+    except PermissionError:
+        return False
+
+    has_direct_assets = False
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name in _SCAN_SKIP_DIRS:
+            continue
+        if entry.is_file():
+            if entry.suffix.lower() in _MODEL_ASSET_EXTS:
+                has_direct_assets = True
+        elif entry.is_dir():
+            # Peek inside — if it has any relevant file this folder is a container
+            try:
+                for sub in entry.iterdir():
+                    if sub.is_file() and sub.suffix.lower() in _MODEL_ASSET_EXTS:
+                        return False   # sub-asset found → we are a container
+            except PermissionError:
+                pass
+
+    return has_direct_assets
+
+
+def _collect_model_asset_dirs(search_root: Path) -> list[Path]:
+    """Return all 3-D asset folders inside *search_root* at any depth."""
+    results: list[Path] = []
+    _walk_for_model_assets(search_root, results)
+    return results
+
+
+def _walk_for_model_assets(folder: Path, out: list) -> None:
+    if _is_model_asset_dir(folder):
+        out.append(folder)
+        return
+    try:
+        entries = list(folder.iterdir())
+    except PermissionError:
+        return
+    for entry in sorted(entries):
+        if entry.is_dir() and not entry.name.startswith(".") \
+                and entry.name not in _SCAN_SKIP_DIRS:
+            _walk_for_model_assets(entry, out)
+
+
+def _scan_model_asset_folder(
+    folder: Path, source: str, backpack_root: Path
+) -> Optional[ScannedMaterial]:
+    """Scan a 3-D asset folder.
+
+    Model files (.fbx, .obj, …) become ScannedAsset entries with
+    asset_type="model".  Bundled texture maps are included with their
+    detected sub_type.  Returns a ScannedMaterial so the browser and
+    detail panel need no changes.
+    """
+    rel = str(folder.relative_to(backpack_root)).replace("\\", "/")
+    meta = read_material_meta(folder)
+    has_json = json_path_for_material(folder).exists()
+
+    mat = ScannedMaterial(
+        path=folder,
+        name=folder.name,
+        rel_path=rel,
+        source=source,
+        meta=meta,
+        has_json=has_json,
+    )
+
+    preview_path: Optional[Path] = None
+    _SKIP_DIRS = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
+
+    # Collect (file, subfolder_hint) from direct children + one subdir level
+    files_to_scan: list[tuple[Path, str]] = []
+    for entry in sorted(folder.iterdir()):
+        if entry.name.startswith(".") or entry.name in _SKIP_DIRS:
+            continue
+        if entry.is_file():
+            files_to_scan.append((entry, ""))
+        elif entry.is_dir():
+            hint = entry.name
+            for sub_f in sorted(entry.iterdir()):
+                if sub_f.is_file() and not sub_f.name.startswith("."):
+                    files_to_scan.append((sub_f, hint))
+
+    for f, subfolder_hint in files_to_scan:
+        ext = f.suffix.lower()
+        if ext in _SKIP_EXTS:
+            continue
+
+        # ── Preview detection ─────────────────────────────────────────────────
+        is_preview = False
+        for pat in QUIXEL_PREVIEW_PATTERNS:
+            if pat.search(f.stem) or (subfolder_hint and pat.search(subfolder_hint)):
+                is_preview = True
+                break
+        if not is_preview and f.stem.lower() == folder.name.lower():
+            is_preview = True
+
+        if is_preview and ext in _TEXTURE_EXTS:
+            preview_path = f
+            mat.meta.preview_file = f.name
+            continue
+
+        # ── Model / scene files ───────────────────────────────────────────────
+        if ext in _MODEL_EXTS or ext in _SCENE_EXTS:
+            asset_meta = read_asset_meta(f)
+            pcache = preview_path_for(f)
+            asset = ScannedAsset(
+                path=f,
+                filename=f.name,
+                rel_path=str(f.relative_to(backpack_root)).replace("\\", "/"),
+                asset_type="model",
+                sub_type=ext.lstrip("."),   # "fbx", "obj", "abc", …
+                meta=asset_meta,
+                has_json=json_path_for_file(f).exists(),
+                material_folder=folder.name,
+                preview_cache=pcache if pcache.exists() else None,
+            )
+            mat.maps.append(asset)
+            continue
+
+        # ── Bundled textures ──────────────────────────────────────────────────
+        if ext in _TEXTURE_EXTS or ext in _HDRI_EXTS:
+            sub_type = _detect_sub_type(f.stem)
+            if not sub_type and subfolder_hint:
+                sub_type = _detect_sub_type(subfolder_hint)
+            asset_meta = read_asset_meta(f)
+            pcache = preview_path_for(f)
+            asset = ScannedAsset(
+                path=f,
+                filename=f.name,
+                rel_path=str(f.relative_to(backpack_root)).replace("\\", "/"),
+                asset_type="texture",
+                sub_type=sub_type or "",
+                meta=asset_meta,
+                has_json=json_path_for_file(f).exists(),
+                material_folder=folder.name,
+                preview_cache=pcache if pcache.exists() else None,
+            )
+            mat.maps.append(asset)
+
+    mat.preview_path = preview_path
+
+    # Fallback preview: albedo texture → any texture
+    if not mat.preview_path:
+        for a in mat.maps:
+            if a.asset_type == "texture" and a.sub_type == "albedo":
+                mat.preview_path = a.path
+                break
+    if not mat.preview_path:
+        for a in mat.maps:
+            if a.asset_type == "texture":
+                mat.preview_path = a.path
+                break
+
+    if mat.preview_path:
+        pcache = preview_path_for(mat.preview_path)
+        mat.preview_cache = pcache if pcache.exists() else None
+
+    return mat
 
 
 def scan_backpack(backpack_root: Path) -> tuple[list[ScannedMaterial], list[ScannedAsset]]:
@@ -349,12 +525,13 @@ def scan_folder_node(node, backpack_root: Path) -> tuple[list[ScannedMaterial], 
     """Scan a FolderNode and return (materials, assets).
 
     scan_mode:
-      "materials" — each immediate subfolder is a ScannedMaterial
-      "texture"   — all files (recursive) are texture ScannedAssets
-      "gobo"      — all files (recursive) are gobo ScannedAssets
-      "model"     — all files (recursive, including subfolders) are model ScannedAssets
-      "hdri"      — all files are HDRI ScannedAssets
-      "none"      — return empty (category node)
+      "materials"     — each subfolder is a ScannedMaterial (PBR texture sets)
+      "model_folder"  — each subfolder is a ScannedMaterial with model+texture files
+      "texture"       — all files (recursive) are texture ScannedAssets
+      "gobo"          — all files (recursive) are gobo ScannedAssets
+      "model"         — all files (recursive) are model ScannedAssets (loose)
+      "hdri"          — all files are HDRI ScannedAssets
+      "none"          — return empty (category node)
     """
     from backpack.core.folder_model import FolderNode  # avoid circular at module level
 
@@ -370,6 +547,12 @@ def scan_folder_node(node, backpack_root: Path) -> tuple[list[ScannedMaterial], 
     if mode == "materials":
         for mat_dir in _collect_material_dirs(folder):
             mat = _scan_material_folder(mat_dir, folder.name.lower(), backpack_root)
+            if mat and mat.maps:
+                materials.append(mat)
+
+    elif mode == "model_folder":
+        for asset_dir in _collect_model_asset_dirs(folder):
+            mat = _scan_model_asset_folder(asset_dir, folder.name.lower(), backpack_root)
             if mat and mat.maps:
                 materials.append(mat)
 
@@ -492,6 +675,42 @@ def sync_json_files(backpack_root: Path, since: float | None = None) -> tuple[in
                         write_asset_meta(f, AssetMeta(asset_type="texture",
                                                       sub_type=sub))
                         created += 1
+
+        elif node.scan_mode == "model_folder":
+            _SKIP_SYNC = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
+            for asset_dir in _collect_model_asset_dirs(folder):
+                if not _folder_changed(asset_dir):
+                    continue
+                jp = json_path_for_material(asset_dir)
+                if not jp.exists():
+                    write_material_meta(asset_dir, MaterialMeta())
+                    created += 1
+                file_hint_pairs: list[tuple[Path, str]] = []
+                for entry in asset_dir.iterdir():
+                    if entry.name.startswith(".") or entry.name in _SKIP_SYNC:
+                        continue
+                    if entry.is_file():
+                        file_hint_pairs.append((entry, ""))
+                    elif entry.is_dir():
+                        for sf in entry.iterdir():
+                            if sf.is_file() and not sf.name.startswith("."):
+                                file_hint_pairs.append((sf, entry.name))
+                for f, hint in file_hint_pairs:
+                    ext = f.suffix.lower()
+                    if ext in _SKIP_EXTS:
+                        continue
+                    if PREVIEW_DIR_NAME in f.parts or JSON_DIR_NAME in f.parts:
+                        continue
+                    if ext in _MODEL_EXTS or ext in _SCENE_EXTS:
+                        atype, sub = "model", ext.lstrip(".")
+                    else:
+                        atype = "texture"
+                        sub = _detect_sub_type(f.stem) or (hint and _detect_sub_type(hint)) or ""
+                    fjp = json_path_for_file(f)
+                    if not fjp.exists():
+                        write_asset_meta(f, AssetMeta(asset_type=atype, sub_type=sub))
+                        created += 1
+
         else:
             # Skip entire folder if unchanged
             if not _folder_changed(folder):
