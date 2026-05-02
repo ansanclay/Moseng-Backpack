@@ -137,24 +137,44 @@ def _scan_material_folder(
 
     preview_path = None
 
-    for f in sorted(folder.iterdir()):
-        if not f.is_file():
+    # ── Collect (file, subfolder_hint) pairs ─────────────────────────────────
+    # Direct children first, then one level of subfolders.
+    # subfolder_hint carries the subfolder name so we can fall back to it
+    # for sub-type detection when the filename has no keyword
+    # (e.g.  Rock/Albedo/file.jpg  →  hint="Albedo"  →  sub_type="albedo").
+    _SKIP_DIRS = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
+
+    files_to_scan: list[tuple[Path, str]] = []   # (path, subfolder_hint)
+
+    for entry in sorted(folder.iterdir()):
+        if entry.name.startswith(".") or entry.name in _SKIP_DIRS:
             continue
-        if f.parent.name in (PREVIEW_DIR_NAME, JSON_DIR_NAME):
-            continue
+        if entry.is_file():
+            files_to_scan.append((entry, ""))
+        elif entry.is_dir():
+            # One level of subfolders — use the folder name as sub-type hint
+            hint = entry.name
+            for sub_f in sorted(entry.iterdir()):
+                if sub_f.is_file() and not sub_f.name.startswith("."):
+                    files_to_scan.append((sub_f, hint))
+
+    for f, subfolder_hint in files_to_scan:
         ext = f.suffix.lower()
         if ext in _SKIP_EXTS:
             continue
 
-        # Detect sub-type
+        # Detect sub-type from filename; fall back to subfolder name
         sub_type = _detect_sub_type(f.stem)
+        if not sub_type and subfolder_hint:
+            sub_type = _detect_sub_type(subfolder_hint)
 
         # Check if preview:
         # 1. Filename matches a known preview pattern (Preview, Thumb, etc.)
-        # 2. File stem equals the parent folder name → preview thumbnail
+        # 2. File stem equals the material folder name → preview thumbnail
+        # 3. Subfolder is named "Preview", "Thumb", etc.
         is_preview = False
         for pat in QUIXEL_PREVIEW_PATTERNS:
-            if pat.search(f.stem):
+            if pat.search(f.stem) or (subfolder_hint and pat.search(subfolder_hint)):
                 is_preview = True
                 break
         if not is_preview and f.stem.lower() == folder.name.lower():
@@ -168,7 +188,6 @@ def _scan_material_folder(
 
         if ext in _TEXTURE_EXTS or ext in _HDRI_EXTS:
             asset_meta = read_asset_meta(f)
-            # Check for cached preview thumbnail
             pcache = preview_path_for(f)
             asset = ScannedAsset(
                 path=f,
@@ -383,17 +402,29 @@ def sync_json_files(backpack_root: Path, since: float | None = None) -> tuple[in
                 if not jp.exists():
                     write_material_meta(mat_dir, MaterialMeta())
                     created += 1
-                for f in mat_dir.iterdir():
-                    if not f.is_file():
+                # Scan direct files + one subfolder level (mirrors _scan_material_folder)
+                _SKIP_SYNC = {PREVIEW_DIR_NAME, JSON_DIR_NAME, ".thumbs", "__MACOSX"}
+                file_hint_pairs: list[tuple[Path, str]] = []
+                for entry in mat_dir.iterdir():
+                    if entry.name.startswith(".") or entry.name in _SKIP_SYNC:
                         continue
+                    if entry.is_file():
+                        file_hint_pairs.append((entry, ""))
+                    elif entry.is_dir():
+                        for sf in entry.iterdir():
+                            if sf.is_file() and not sf.name.startswith("."):
+                                file_hint_pairs.append((sf, entry.name))
+
+                for f, hint in file_hint_pairs:
                     if f.suffix.lower() in _SKIP_EXTS:
                         continue
                     if PREVIEW_DIR_NAME in f.parts or JSON_DIR_NAME in f.parts:
                         continue
+                    sub = _detect_sub_type(f.stem) or (hint and _detect_sub_type(hint)) or ""
                     fjp = json_path_for_file(f)
                     if not fjp.exists():
                         write_asset_meta(f, AssetMeta(asset_type="texture",
-                                                      sub_type=_detect_sub_type(f.stem)))
+                                                      sub_type=sub))
                         created += 1
         else:
             # Skip entire folder if unchanged
