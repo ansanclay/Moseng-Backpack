@@ -1,9 +1,45 @@
 """Top bar: search, type filter pills, settings gear, refresh + import buttons."""
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLineEdit, QPushButton, QButtonGroup,
 )
-from PySide6.QtCore import Signal, QTimer
+from PySide6.QtCore import Signal, QTimer, QSize
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
+from PySide6.QtSvg import QSvgRenderer
+
+
+def _svg_icon(svg_path: str, normal_color: str, hover_color: str,
+              size: int = 18) -> QIcon:
+    """Load an SVG and return a two-mode QIcon (Normal + Active).
+
+    The SVG must use fill="white" as a placeholder; this function
+    replaces it with the desired tint colors at render time.
+    """
+    try:
+        raw = Path(svg_path).read_bytes()
+    except OSError:
+        return QIcon()
+
+    def _render(color: str) -> QPixmap:
+        colored = raw.replace(b'fill="white"',
+                              ("fill=\"%s\"" % color).encode())
+        renderer = QSvgRenderer(colored)
+        pix = QPixmap(size, size)
+        pix.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pix)
+        renderer.render(painter)
+        painter.end()
+        return pix
+
+    icon = QIcon()
+    icon.addPixmap(_render(normal_color), QIcon.Normal, QIcon.Off)
+    icon.addPixmap(_render(hover_color),  QIcon.Active, QIcon.Off)
+    return icon
+
+
+_ICONS_DIR = Path(__file__).parent / "resources" / "icons"
 
 
 class SearchBar(QWidget):
@@ -88,18 +124,30 @@ class SearchBar(QWidget):
 
         layout.addSpacing(8)
 
-        # Refresh button — square icon
-        self.refresh_btn = QPushButton("\u21bb")
+        # Refresh button — SVG icon
+        self.refresh_btn = QPushButton()
         self.refresh_btn.setFixedSize(34, 34)
         self.refresh_btn.setToolTip("Refresh & sync JSON files + previews")
+
+        _icon = _svg_icon(
+            str(_ICONS_DIR / "refresh.svg"),
+            normal_color="#8b8e96",
+            hover_color="#d4d6db",
+            size=16,
+        )
+        if not _icon.isNull():
+            self.refresh_btn.setIcon(_icon)
+            self.refresh_btn.setIconSize(QSize(16, 16))
+        else:
+            self.refresh_btn.setText("↻")   # fallback glyph
+
         self.refresh_btn.setStyleSheet("""
             QPushButton {
-                background: #23262e; color: #8b8e96;
+                background: #23262e;
                 border: 1px solid #2a2d35; border-radius: 6px;
-                font-size: 16px;
             }
-            QPushButton:hover { color: #d4d6db; border-color: #002aff; }
-            QPushButton:pressed { color: #002aff; }
+            QPushButton:hover { border-color: #002aff; }
+            QPushButton:pressed { background: #1a1d24; }
         """)
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
         layout.addWidget(self.refresh_btn)
