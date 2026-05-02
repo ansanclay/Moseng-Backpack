@@ -364,6 +364,31 @@ def group_into_materials(
         key = sub if sub else f.stem   # unrecognised → use full stem as key
         groups[base][key] = f
 
+    # ── Post-pass: reclassify same-name-as-group files as "preview" ──────────
+    # A file whose clean stem exactly matches the material base name is a
+    # preview/thumbnail image (common in Quixel, Poliigon, and custom packs).
+    # e.g.  Rock_Mossy/Rock_Mossy.jpg  →  preview
+    for base_name, maps in groups.items():
+        for key in list(maps.keys()):
+            if key in SUB_TYPE_LABEL:
+                continue   # already a known map type, leave it alone
+            path = maps[key]
+            if _clean_stem(path.stem).lower() == base_name.lower():
+                maps["preview"] = maps.pop(key)
+
+    # ── Also promote parent-folder-name matches when files carry a full path ──
+    # Handles:  MaterialFolder/MaterialFolder.jpg  →  preview
+    for base_name, maps in groups.items():
+        for key in list(maps.keys()):
+            if key == "preview":
+                continue
+            path = maps[key]
+            parent_name = path.parent.name
+            if (parent_name and
+                    _clean_stem(path.stem).lower() == parent_name.lower()):
+                maps["preview"] = maps.pop(key)
+                break
+
     return groups
 
 

@@ -149,12 +149,17 @@ def _scan_material_folder(
         # Detect sub-type
         sub_type = _detect_sub_type(f.stem)
 
-        # Check if preview
+        # Check if preview:
+        # 1. Filename matches a known preview pattern (Preview, Thumb, etc.)
+        # 2. File stem equals the parent folder name → preview thumbnail
         is_preview = False
         for pat in QUIXEL_PREVIEW_PATTERNS:
             if pat.search(f.stem):
                 is_preview = True
                 break
+        if not is_preview and f.stem.lower() == folder.name.lower():
+            is_preview = True
+            sub_type = "preview"
 
         if is_preview and ext in _TEXTURE_EXTS:
             preview_path = f
