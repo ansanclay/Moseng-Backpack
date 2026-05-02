@@ -67,27 +67,39 @@ _ALL_IMAGE_EXTS = _TEXTURE_EXTS | _HDRI_EXTS
 def _is_material_dir(folder: Path) -> bool:
     """True if *folder* is a leaf material folder (not a category container).
 
-    A folder qualifies as a material folder when it:
-    - directly contains at least one image file, OR
-    - has immediate subdirectories whose names are PBR map keywords
-      (structured layout: Rock/Albedo/…, Rock/Normal/…)
-
-    Otherwise it is treated as a category/container and we recurse deeper.
+    Rules (checked in order):
+    1. If any immediate subdirectory has a PBR-keyword name (Albedo/, Normal/…)
+       → structured material layout → True.
+    2. If any immediate subdirectory (non-skip, non-PBR-keyword) itself contains
+       image files → this folder is a category/container → False.
+       (Stray catalog/preview images sitting next to sub-material folders are
+        ignored so that SOURCE_Foo/ is never mistaken for a material.)
+    3. If the folder contains at least one direct image file → material → True.
+    4. Otherwise → container → False.
     """
     try:
         entries = list(folder.iterdir())
     except PermissionError:
         return False
 
+    has_direct_images = False
     for entry in entries:
         if entry.name.startswith(".") or entry.name in _SCAN_SKIP_DIRS:
             continue
         if entry.is_file() and entry.suffix.lower() in _ALL_IMAGE_EXTS:
-            return True   # direct texture → material folder
-        if entry.is_dir() and _detect_sub_type(entry.name):
-            return True   # PBR-keyword subfolder → structured material
+            has_direct_images = True
+        elif entry.is_dir():
+            if _detect_sub_type(entry.name):
+                return True   # PBR-keyword subfolder → structured material
+            # Non-PBR subdir: peek inside — if it has images this folder is a container
+            try:
+                for sub in entry.iterdir():
+                    if sub.is_file() and sub.suffix.lower() in _ALL_IMAGE_EXTS:
+                        return False  # sub-material found → we are a container
+            except PermissionError:
+                pass
 
-    return False
+    return has_direct_images
 
 
 def _collect_material_dirs(search_root: Path) -> list[Path]:
