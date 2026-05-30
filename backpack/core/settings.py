@@ -2,17 +2,32 @@
 
 import json
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 
 SETTINGS_DIR = Path.home() / ".moseng_backpack"
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
+# Default folder structure created for a new project (one folder path per entry;
+# "/" nests). Users can customise this in Settings → Project.
+DEFAULT_PROJECT_TEMPLATE = [
+    "01_Assets",
+    "01_Assets/Models",
+    "01_Assets/Textures",
+    "02_Scenes",
+    "03_Caches",
+    "04_Renders",
+    "05_References",
+    "06_Exports",
+]
+
 
 @dataclass
 class AppSettings:
     drive_letter: str = ""
-    accent_color: str = "#002aff"
+    accent_color: str = "#F2EEDC"     # primary
+    secondary_color: str = "#FFFFFF"  # secondary
+    bg_color: str = "#171E1B"         # background
     font_family: str = "Segoe UI"
     font_size: int = 10
     grid_card_size: int = 200     # default card width in pixels
@@ -21,6 +36,12 @@ class AppSettings:
     window_height: int = 850
     quixel_enabled: bool = False
     last_folder_path: str = ""    # disk_path of last selected FolderNode
+    debug_mode: bool = False
+    debug_overlay_color: str = "#FF4040"
+    debug_line_width: float = 1.0
+    dock_state: str = ""          # base64 of CDockManager.saveState() — panel layout
+    project_root: str = ""        # active project folder (Project panel)
+    project_template: list = field(default_factory=lambda: list(DEFAULT_PROJECT_TEMPLATE))
 
 
 def load_settings() -> AppSettings:
