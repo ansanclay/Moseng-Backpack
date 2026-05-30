@@ -8,31 +8,8 @@ import re
 from pathlib import Path
 from PIL import Image
 
-# Quixel resolution pattern: matches a resolution tag delimited by
-# separators (`_`, `-`, space) or string boundaries. Examples:
-#   acg_4K_Albedo.jpg    → 4K      (middle, both sides _)
-#   Rock_Mossy_4K        → 4K      (suffix)
-#   Rock_4K.jpg          → 4K      (suffix before extension)
-#   4K_surface_ms        → 4K      (prefix)
-# The capture group keeps the tag only; downscale_target_name still
-# replaces text at m.start(1)..m.end(1).
-_RES_PATTERN = re.compile(r"(?:^|(?<=[_\-\s]))(\d+K|512)(?=[_\-\s.]|$)", re.I)
-
-
-# Strip every occurrence of a resolution tag (and its leading separator)
-# from a material/folder name, so the displayed name doesn't include
-# `_4K`, `_2K` etc.
-_RES_STRIP_PATTERN = re.compile(r"[_\-\s](\d+K|512)(?=[_\-\s.]|$)", re.I)
-
-
-def strip_resolution_suffix(name: str) -> str:
-    """Return *name* with every embedded resolution tag removed.
-
-        Rock_Mossy_4K              -> Rock_Mossy
-        vbjblgkcg_4K_surface_ms    -> vbjblgkcg_surface_ms
-    """
-    cleaned = _RES_STRIP_PATTERN.sub("", name)
-    return cleaned.strip("_- ")
+# Quixel resolution pattern: _4K_, _2K_, _1K_, _512_ etc.
+_RES_PATTERN = re.compile(r"_(\d+K|512)_", re.I)
 
 # Resolution targets (tag → max pixel dimension)
 RESOLUTION_MAP = {

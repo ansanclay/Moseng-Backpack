@@ -91,9 +91,30 @@ class ResolutionChip(QPushButton):
         label = f"{res}  {count}" if count else res
         super().__init__(label, parent)
         self.res_name = res
-        self.setObjectName("resChip")
         self.setCheckable(True)
+        self.setMinimumHeight(26)
         self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #6f7280;
+                border: none;
+                border-radius: 5px;
+                padding: 3px 12px;
+                text-align: left;
+                font-size: 11px;
+                font-family: "DM Sans", "Inter", "Segoe UI", sans-serif;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,10);
+                color: #cdd0df;
+            }
+            QPushButton:checked {
+                background: #05091e;
+                color: #1a3fff;
+                border: 1px solid rgba(0,42,255,40);
+            }
+        """)
 
 
 class SidebarPanel(QWidget):
@@ -107,16 +128,12 @@ class SidebarPanel(QWidget):
         super().__init__(parent)
         self.accent = accent_color
         self.setObjectName("sidebar")
-        self.setMinimumWidth(150)   # adaptive: resizable, no longer pinned
+        self.setFixedWidth(210)
         self._chips: list[TagChip] = []
         self._res_chips: list[ResolutionChip] = []
         self._tag_registry: dict[str, TagInfo] = {}
         self._backpack_root: Path | None = None
         self._setup_ui()
-
-    def sizeHint(self) -> QSize:
-        # Preferred (initial) width; user can resize down to minimumWidth.
-        return QSize(210, super().sizeHint().height())
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -208,18 +225,13 @@ class SidebarPanel(QWidget):
             c.deleteLater()
         self._res_chips.clear()
 
-        # Count each material ONCE per unique resolution it contains.
-        # Quixel materials carry maps from multiple res subdirs (1K/2K/4K),
-        # so a single material can land in several buckets.
         res_counts: dict[str, int] = {}
         for mat in materials:
-            mat_res: set[str] = set()
             for a in mat.maps:
                 tag = detect_resolution_tag(a.filename)
                 if tag:
-                    mat_res.add(tag)
-            for tag in mat_res:
-                res_counts[tag] = res_counts.get(tag, 0) + 1
+                    res_counts[tag] = res_counts.get(tag, 0) + 1
+                    break  # one count per material
         for asset in assets:
             tag = detect_resolution_tag(asset.filename)
             if tag:
