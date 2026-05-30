@@ -1,59 +1,32 @@
-"""Preview cache system - generates 512px JPEG thumbnails for fast browsing.
+"""Preview cache system - generates 512x512 thumbnails for fast browsing.
 
-New structure (when backpack_root is configured):
-  BACKPACK/PREVIEWS/<relative-path-from-ASSETS>/<stem>.jpeg
-
-Call set_backpack_root() once at startup (main_window.init_drive).
+Each folder that contains images gets a `.preview/` subfolder with resized copies.
 """
 
 from pathlib import Path
 from PIL import Image
-from typing import Optional
 
 PREVIEW_SIZE = (512, 512)
-PREVIEWS_DIR_NAME = "PREVIEWS"
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".exr", ".hdr"}
-
-# Module-level root — set once at startup via set_backpack_root()
-_backpack_root: Optional[Path] = None
-
-
-def set_backpack_root(root: Path) -> None:
-    global _backpack_root
-    _backpack_root = root
+PREVIEW_DIR_NAME = ".preview"
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".exr"}
 
 
 def preview_dir_for(folder: Path) -> Path:
-    """Return the PREVIEWS directory path that mirrors a given asset folder."""
-    if _backpack_root:
-        assets_root = _backpack_root / "ASSETS"
-        try:
-            rel = folder.relative_to(assets_root)
-            return _backpack_root / PREVIEWS_DIR_NAME / rel
-        except ValueError:
-            pass
-    # Fallback: legacy in-folder .preview/ subdir
-    return folder / ".preview"
+    """Return the .preview directory path for a given folder."""
+    return folder / PREVIEW_DIR_NAME
 
 
 def preview_path_for(filepath: Path) -> Path:
     """Return the cached preview path for an image file.
 
-    Saved as .jpeg in BACKPACK/PREVIEWS/ mirroring the ASSETS tree.
+    Preview is always saved as .jpg for consistency and small size.
     """
-    if _backpack_root:
-        assets_root = _backpack_root / "ASSETS"
-        try:
-            rel = filepath.relative_to(assets_root)
-            return _backpack_root / PREVIEWS_DIR_NAME / rel.parent / f"{filepath.stem}.jpeg"
-        except ValueError:
-            pass
-    # Fallback: legacy in-folder .preview/ subdir
-    return filepath.parent / ".preview" / f"{filepath.stem}_preview.jpg"
+    pdir = preview_dir_for(filepath.parent)
+    return pdir / f"{filepath.stem}_preview.jpg"
 
 
 def ensure_preview(filepath: Path, force: bool = False) -> Path | None:
-    """Generate a 512px preview for an image file if it doesn't exist.
+    """Generate a 512x512 preview for an image file if it doesn't exist.
 
     Returns the preview path, or None if the file can't be previewed.
     """
@@ -69,7 +42,7 @@ def ensure_preview(filepath: Path, force: bool = False) -> Path | None:
 
     try:
         pdir = ppath.parent
-        pdir.mkdir(parents=True, exist_ok=True)
+        pdir.mkdir(exist_ok=True)
 
         ext = filepath.suffix.lower()
         if ext in (".exr", ".hdr"):
@@ -106,143 +79,68 @@ def generate_previews_for_folder(folder: Path, since: float | None = None) -> in
     return count
 
 
-def sync_previews(
-    backpack_root: Path,
-    since: float | None = None,
-    on_progress: "callable | None" = None,
-) -> int:
+def sync_previews(backpack_root: Path, since: float | None = None) -> int:
     """Generate preview caches for the entire BACKPACK tree.
 
     If ``since`` is given, only process folders modified after that timestamp.
-    ``on_progress(current, total, label)`` is called before processing each file.
     Returns total number of previews generated/updated.
     """
+    total = 0
+
     if not backpack_root.exists():
-        return 0
+        return total
 
     from backpack.core.folder_model import build_folder_tree
 
     root_node = build_folder_tree(backpack_root, quixel_enabled=True)
 
-    # ── Pass 1: collect all image files to process ───────────────────────────
-    from backpack.core.scanner import _collect_material_dirs, _collect_model_asset_dirs
-
-    _files: list[Path] = []
-    _SKIP = {"PREVIEWS", "JSON", ".preview", ".json", ".thumbs", "__MACOSX"}
-
-    def _collect(node):
+    def _walk(node):
+        nonlocal total
         if node.scan_mode == "none":
             for child in node.children:
-                _collect(child)
+                _walk(child)
             return
         folder: Path = node.disk_path
         if not folder.exists():
             for child in node.children:
-                _collect(child)
+                _walk(child)
             return
-
         if node.scan_mode == "materials":
-            # Find each leaf material folder and collect its direct images
-            for mat_dir in _collect_material_dirs(folder):
-                _collect_leaf_images(mat_dir)
-        elif node.scan_mode == "model_folder":
-            # Find each leaf asset folder and collect its images (direct + one subdir)
-            for asset_dir in _collect_model_asset_dirs(folder):
-                _collect_leaf_images(asset_dir)
+            for mat_dir in folder.iterdir():
+                if mat_dir.is_dir() and not mat_dir.name.startswith("."):
+                    total += generate_previews_for_folder(mat_dir, since=since)
         else:
-            # Flat scan (texture / hdri / gobo) — recurse through all subdirs
-            _collect_recursive_images(folder)
-
+            total += generate_previews_for_folder(folder, since=since)
         for child in node.children:
-            _collect(child)
+            _walk(child)
 
-    def _collect_leaf_images(folder: Path):
-        """Collect images from a leaf asset/material folder (direct + one subdir level)."""
-        try:
-            for entry in folder.iterdir():
-                if entry.name.startswith(".") or entry.name in _SKIP:
-                    continue
-                if entry.is_file() and entry.suffix.lower() in _IMAGE_EXTS:
-                    _files.append(entry)
-                elif entry.is_dir():
-                    try:
-                        for sub in entry.iterdir():
-                            if sub.is_file() and sub.suffix.lower() in _IMAGE_EXTS:
-                                _files.append(sub)
-                    except (PermissionError, FileNotFoundError):
-                        pass
-        except (PermissionError, FileNotFoundError):
-            pass
-
-    def _collect_recursive_images(folder: Path):
-        """Collect images recursively (for flat scan modes: texture, hdri, gobo)."""
-        if since is not None and folder.exists() and folder.stat().st_mtime <= since:
-            return
-        try:
-            for f in folder.rglob("*"):
-                if not f.is_file():
-                    continue
-                if f.suffix.lower() not in _IMAGE_EXTS:
-                    continue
-                if any(part in _SKIP for part in f.parts):
-                    continue
-                _files.append(f)
-        except (PermissionError, FileNotFoundError):
-            pass
-
-    _collect(root_node)
-
-    # ── Pass 2: generate previews with progress ──────────────────────────────
-    total_files = len(_files)
-    generated = 0
-    for idx, f in enumerate(_files):
-        if on_progress:
-            on_progress(idx, total_files, f.name)
-        if ensure_preview(f):
-            generated += 1
-
-    if on_progress:
-        on_progress(total_files, total_files, "")
-    return generated
+    _walk(root_node)
+    return total
 
 
 def clean_orphaned_previews(backpack_root: Path) -> int:
-    """Remove preview files in BACKPACK/PREVIEWS/ whose source no longer exists."""
+    """Remove preview files whose source no longer exists."""
     removed = 0
-    previews_root = backpack_root / PREVIEWS_DIR_NAME
-    assets_root   = backpack_root / "ASSETS"
 
-    if not previews_root.exists():
-        return removed
+    for preview_dir in backpack_root.rglob(PREVIEW_DIR_NAME):
+        if not preview_dir.is_dir():
+            continue
+        parent = preview_dir.parent
+        for pf in preview_dir.iterdir():
+            if not pf.is_file():
+                continue
+            # Preview name: {stem}_preview.jpg -> original stem
+            orig_stem = pf.stem.replace("_preview", "")
+            # Check if any source file with this stem exists
+            matches = [f for f in parent.iterdir()
+                       if f.is_file() and f.stem == orig_stem
+                       and f.suffix.lower() in _IMAGE_EXTS]
+            if not matches:
+                pf.unlink()
+                removed += 1
 
-    for pf in previews_root.rglob("*.jpeg"):
-        if not pf.is_file():
-            continue
-        # Mirror path: PREVIEWS/<rel> → ASSETS/<rel>
-        try:
-            rel = pf.relative_to(previews_root)
-        except ValueError:
-            continue
-        # Find the original asset: same relative path under ASSETS, any image extension
-        asset_dir = assets_root / rel.parent
-        stem = pf.stem
-        if not asset_dir.exists():
-            pf.unlink()
-            removed += 1
-            continue
-        matches = [f for f in asset_dir.iterdir()
-                   if f.is_file() and f.stem == stem
-                   and f.suffix.lower() in _IMAGE_EXTS]
-        if not matches:
-            pf.unlink()
-            removed += 1
-
-    # Remove empty preview dirs
-    for d in sorted(previews_root.rglob("*"), reverse=True):
-        if d.is_dir() and not any(d.iterdir()):
-            try:
-                d.rmdir()
-            except OSError:
-                pass
+        # Remove empty preview dirs
+        if preview_dir.exists() and not any(preview_dir.iterdir()):
+            preview_dir.rmdir()
 
     return removed
