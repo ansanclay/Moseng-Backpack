@@ -9,18 +9,21 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QListView, QMenu, QAbstractItemView, QApplication, QWidget,
-    QPushButton, QHBoxLayout, QLabel,
+    QPushButton, QHBoxLayout, QLabel, QLineEdit, QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QMimeData, QUrl, QPoint, QTimer, QRect, QRectF
 from PySide6.QtGui import (
     QStandardItemModel, QStandardItem, QAction, QKeyEvent, QDrag,
     QPixmap, QPixmapCache, QPainter, QPainterPath, QColor, QFont,
-    QLinearGradient, QImageReader,
+    QImageReader,
 )
 
 from backpack.core.scanner import ScannedMaterial, ScannedAsset
 from backpack.core.downscale import detect_resolution_tag
-from backpack.ui.delegates.thumbnail_delegate import ThumbnailDelegate, SPACER_ROLE
+from backpack.ui.delegates.thumbnail_delegate import (
+    ThumbnailDelegate, SPACER_ROLE, SIZE_ROLE, DATE_ROLE, DEPTH_ROLE,
+)
+from backpack.ui._smooth_scroll import install_smooth_scroll
 
 
 # ── Hover preview popup ───────────────────────────────────────────────────────
@@ -153,12 +156,6 @@ class HoverPreview(QWidget):
             p.setPen(QColor("#3a3d45"))
             p.drawText(QRectF(0, 0, W, img_h), Qt.AlignCenter, "No preview")
 
-        # Gradient vignette at bottom of image
-        grad = QLinearGradient(0, img_h - 50, 0, img_h)
-        grad.setColorAt(0, QColor(15, 17, 22, 0))
-        grad.setColorAt(1, QColor(15, 17, 22, 160))
-        p.fillRect(0, img_h - 50, W, 50, grad)
-
         # Filename bar
         p.fillRect(0, img_h, W, self._NAME_H, QColor(13, 15, 20, 250))
         p.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
@@ -171,37 +168,22 @@ class HoverPreview(QWidget):
 
 
 class AssetSubToolbar(QWidget):
-    """Compact toolbar above the asset grid: result count, sort, view toggle, quick filters.
+    """Compact toolbar above the asset grid: result count, search, sort, view.
 
     Signals
     -------
-    sort_changed(str)          "name" | "size"
-    view_changed(str)          "grid" | "list"
-    quick_filter_changed(str)  "all" | "4k" | "fav"
+    sort_changed(str)     "name" | "size"
+    view_changed(str)     "grid" | "list"
+    compact_changed(bool) compact on/off (modifies grid + list)
     """
 
     sort_changed          = Signal(str)
     view_changed          = Signal(str)
-    quick_filter_changed  = Signal(str)
-
-    _BTN_SS = """
-        QPushButton {{
-            background: transparent;
-            color: {fg};
-            border: none;
-            border-radius: 4px;
-            padding: 3px 9px;
-            font-size: 11px;
-            font-family: "DM Sans", "Inter", "Segoe UI", sans-serif;
-            min-height: 22px;
-        }}
-        QPushButton:hover {{ background: rgba(255,255,255,10); color: #cdd0df; }}
-        QPushButton:checked {{
-            background: rgba(0,42,255,36);
-            color: #4060ff;
-            border: 1px solid rgba(0,42,255,60);
-        }}
-    """
+    compact_changed       = Signal(bool)
+    recursive_changed     = Signal(bool)  # include items from subfolders
+    latest_changed        = Signal(bool)  # scene files → latest version only
+    search_changed        = Signal(str)   # debounced 200 ms
+    refresh_requested     = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -210,7 +192,15 @@ class AssetSubToolbar(QWidget):
 
         self._active_sort   = "name"
         self._active_view   = "grid"
-        self._active_filter = "all"
+        self._compact       = False
+
+        # Search debounce timer
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(
+            lambda: self.search_changed.emit(self._search.text().strip())
+        )
 
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 0, 8, 0)
@@ -223,22 +213,35 @@ class AssetSubToolbar(QWidget):
             "font-family: 'DM Sans','Inter','Segoe UI',sans-serif;"
         )
         row.addWidget(self._count_lbl)
+
+        # Search input (left-aligned, before the stretch)
+        self._search = QLineEdit()
+        self._search.setObjectName("explorerSearch")
+        self._search.setPlaceholderText("Search…")
+        self._search.setClearButtonEnabled(True)
+        self._search.setFixedHeight(26)
+        # Adaptive width: shrinks on narrow panels, grows up to a cap.
+        self._search.setMinimumWidth(110)
+        self._search.setMaximumWidth(360)
+        self._search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._search.textChanged.connect(lambda: self._search_timer.start())
+        row.addSpacing(8)
+        row.addWidget(self._search, stretch=1)
+
         row.addStretch()
 
+        def _mk(label: str) -> QPushButton:
+            """Checkable toolbar button styled via global QSS #subToolbarBtn."""
+            b = QPushButton(label)
+            b.setObjectName("subToolbarBtn")
+            b.setCheckable(True)
+            return b
+
         # Sort buttons
-        _dim = "#4a4f66"
-        self._btn_sort_name = QPushButton("Name")
-        self._btn_sort_name.setCheckable(True)
-        self._btn_sort_name.setChecked(True)
-        self._btn_sort_name.setStyleSheet(self._BTN_SS.format(fg=_dim))
-
-        self._btn_sort_size = QPushButton("Size")
-        self._btn_sort_size.setCheckable(True)
-        self._btn_sort_size.setStyleSheet(self._BTN_SS.format(fg=_dim))
-
+        self._btn_sort_name = _mk("Name");  self._btn_sort_name.setChecked(True)
+        self._btn_sort_size = _mk("Size")
         self._btn_sort_name.clicked.connect(lambda: self._set_sort("name"))
         self._btn_sort_size.clicked.connect(lambda: self._set_sort("size"))
-
         row.addWidget(self._btn_sort_name)
         row.addWidget(self._btn_sort_size)
 
@@ -247,52 +250,57 @@ class AssetSubToolbar(QWidget):
         sep.setStyleSheet("color: #2a2d3a; font-size: 13px;")
         row.addWidget(sep)
 
-        # View toggle buttons
-        self._btn_grid = QPushButton("⊞")
-        self._btn_grid.setCheckable(True)
-        self._btn_grid.setChecked(True)
-        self._btn_grid.setFixedWidth(28)
-        self._btn_grid.setStyleSheet(self._BTN_SS.format(fg=_dim))
-
-        self._btn_list = QPushButton("☰")
-        self._btn_list.setCheckable(True)
-        self._btn_list.setFixedWidth(28)
-        self._btn_list.setStyleSheet(self._BTN_SS.format(fg=_dim))
-
+        # View toggle: grid (cards) vs list (rows) — mutually exclusive
+        self._btn_grid = _mk("⊞");  self._btn_grid.setChecked(True);  self._btn_grid.setFixedWidth(28)
+        self._btn_list = _mk("☰");  self._btn_list.setFixedWidth(28)
+        self._btn_grid.setToolTip("Grid view")
+        self._btn_list.setToolTip("List view")
         self._btn_grid.clicked.connect(lambda: self._set_view("grid"))
         self._btn_list.clicked.connect(lambda: self._set_view("list"))
-
         row.addWidget(self._btn_grid)
         row.addWidget(self._btn_list)
 
-        # Separator
-        sep2 = QLabel("|")
-        sep2.setStyleSheet("color: #2a2d3a; font-size: 13px;")
-        row.addWidget(sep2)
+        # Compact toggle — independent on/off, applies to both grid and list
+        self._btn_compact = _mk("≣");  self._btn_compact.setFixedWidth(28)
+        self._btn_compact.setToolTip("Compact (toggle)")
+        self._btn_compact.toggled.connect(self._on_compact_toggled)
+        row.addWidget(self._btn_compact)
 
-        # Quick-filter chips
-        self._btn_all = QPushButton("All")
-        self._btn_all.setCheckable(True)
-        self._btn_all.setChecked(True)
-        self._btn_all.setStyleSheet(self._BTN_SS.format(fg=_dim))
+        # Subfolders toggle — show every item from the folder AND its subfolders
+        self._btn_recursive = _mk("⤵");  self._btn_recursive.setFixedWidth(28)
+        self._btn_recursive.setToolTip("Include items from subfolders (show all below)")
+        self._btn_recursive.toggled.connect(self.recursive_changed.emit)
+        row.addWidget(self._btn_recursive)
 
-        self._btn_4k = QPushButton("4K")
-        self._btn_4k.setCheckable(True)
-        self._btn_4k.setStyleSheet(self._BTN_SS.format(fg=_dim))
+        # Latest toggle — collapse versioned scene files to the newest (v003…)
+        self._btn_latest = _mk("Latest")
+        self._btn_latest.setToolTip("Show only the latest version of scene files (v003 over v001/v002)")
+        self._btn_latest.toggled.connect(self.latest_changed.emit)
+        row.addWidget(self._btn_latest)
 
-        self._btn_fav = QPushButton("★ Fav")
-        self._btn_fav.setCheckable(True)
-        self._btn_fav.setStyleSheet(self._BTN_SS.format(fg=_dim))
-
-        self._btn_all.clicked.connect(lambda: self._set_filter("all"))
-        self._btn_4k.clicked.connect(lambda: self._set_filter("4k"))
-        self._btn_fav.clicked.connect(lambda: self._set_filter("fav"))
-
-        row.addWidget(self._btn_all)
-        row.addWidget(self._btn_4k)
-        row.addWidget(self._btn_fav)
+        # Separator + Refresh button (far right)
+        sep3 = QLabel("|")
+        sep3.setStyleSheet("color: #2a2d3a; font-size: 13px;")
+        row.addWidget(sep3)
+        self._btn_refresh = QPushButton("↻")
+        self._btn_refresh.setObjectName("subToolbarBtn")
+        self._btn_refresh.setFixedWidth(28)
+        self._btn_refresh.setToolTip("Refresh & sync")
+        self._btn_refresh.clicked.connect(self.refresh_requested.emit)
+        row.addWidget(self._btn_refresh)
 
     # ── Public API ─────────────────────────────────────────────────────────────
+
+    def focus_search(self):
+        """Focus the search field and select its text (Ctrl+F target)."""
+        self._search.setFocus()
+        self._search.selectAll()
+
+    def clear_search(self):
+        """Clear the search field without emitting (used on folder navigation)."""
+        self._search.blockSignals(True)
+        self._search.clear()
+        self._search.blockSignals(False)
 
     def set_count(self, n: int) -> None:
         self._count_lbl.setText(f"{n} item{'s' if n != 1 else ''}")
@@ -302,9 +310,6 @@ class AssetSubToolbar(QWidget):
 
     def active_view(self) -> str:
         return self._active_view
-
-    def active_filter(self) -> str:
-        return self._active_filter
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
@@ -320,12 +325,9 @@ class AssetSubToolbar(QWidget):
         self._btn_list.setChecked(mode == "list")
         self.view_changed.emit(mode)
 
-    def _set_filter(self, mode: str) -> None:
-        self._active_filter = mode
-        self._btn_all.setChecked(mode == "all")
-        self._btn_4k.setChecked(mode == "4k")
-        self._btn_fav.setChecked(mode == "fav")
-        self.quick_filter_changed.emit(mode)
+    def _on_compact_toggled(self, on: bool) -> None:
+        self._compact = on
+        self.compact_changed.emit(on)
 
 
 class AssetBrowser(QListView):
@@ -341,6 +343,9 @@ class AssetBrowser(QListView):
         self.setObjectName("assetGrid")
 
         self._card_size = 200
+        self._view_mode = "grid"   # "grid" | "list"
+        self._compact   = False    # density toggle (applies to grid + list)
+        self._list_root: Path | None = None  # selected folder, for subfolder indent
         self._expanded_materials: set[str] = set()  # rel_paths of expanded materials
         self._current_materials: list[ScannedMaterial] = []
         self._current_assets: list[ScannedAsset] = []
@@ -370,6 +375,8 @@ class AssetBrowser(QListView):
 
         self.setViewMode(QListView.IconMode)
         self.setResizeMode(QListView.Adjust)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        install_smooth_scroll(self, px_per_notch=120, duration_ms=200)
         self.setSpacing(4)
         self.setUniformItemSizes(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -392,6 +399,23 @@ class AssetBrowser(QListView):
         """Pass tag registry to delegate for tag color lookup."""
         self.delegate.tag_registry = registry
 
+    def set_list_root(self, path: "Path | None"):
+        """Folder the current items belong to — used to indent subfolder items
+        in list view (depth = how far below this folder the file lives)."""
+        self._list_root = path
+
+    def _depth_of(self, path: Path) -> int:
+        if not self._list_root:
+            return 0
+        try:
+            return len(path.parent.relative_to(self._list_root).parts)
+        except (ValueError, OSError):
+            return 0
+
+    def set_accent(self, color: str):
+        """Forward the theme primary colour to the thumbnail delegate."""
+        self.delegate.set_accent(color)
+
     def set_card_size(self, size: int):
         self._card_size = max(120, min(400, size))
         self.delegate.card_width = self._card_size
@@ -399,9 +423,47 @@ class AssetBrowser(QListView):
         self._update_grid_size()
         self.viewport().update()
 
+    def set_view_mode(self, mode: str):
+        """Switch between 'grid' (icon cards) and 'list' (rows)."""
+        if mode == self._view_mode:
+            return
+        self._view_mode = mode
+        self.delegate.view_mode = mode
+        self._apply_view_config()
+        self._rebuild_model(animate=False)
+
+    def set_compact(self, on: bool):
+        """Toggle compact density. Applies to both grid and list:
+        grid → hides the text under the thumbnail; list → dense single-line rows."""
+        on = bool(on)
+        if on == self._compact:
+            return
+        self._compact = on
+        self.delegate.compact = on
+        self._apply_view_config()
+        self._rebuild_model(animate=False)
+
+    def _apply_view_config(self):
+        """Reconfigure the QListView for the current view mode + compact flag."""
+        if self._view_mode == "grid":
+            self.setViewMode(QListView.IconMode)
+            self.setFlow(QListView.LeftToRight)
+            self.setWrapping(True)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setSpacing(4)
+            self._update_grid_size()
+        else:
+            self.setViewMode(QListView.ListMode)
+            self.setFlow(QListView.TopToBottom)
+            self.setWrapping(False)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setSpacing(0 if self._compact else 2)
+            self.setGridSize(QSize())   # clear fixed grid → use delegate sizeHint
+
     def _update_grid_size(self):
         w = self._card_size + 4
-        h = int(self._card_size * 1.15) + 4
+        # Compact grid hides the text strip → near-square image-only cards.
+        h = (self._card_size if self._compact else int(self._card_size * 1.15)) + 4
         self.setGridSize(QSize(w, h))
 
     def wheelEvent(self, event):
@@ -415,10 +477,14 @@ class AssetBrowser(QListView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Recalculate spacer padding when the column count changes
-        new_cols = self._col_count()
-        if new_cols != self._last_cols and (self._current_materials or self._current_assets):
-            self._rebuild_model(animate=False)
+        if self._view_mode == "grid":
+            # Recalculate spacer padding when the column count changes
+            new_cols = self._col_count()
+            if new_cols != self._last_cols and (self._current_materials or self._current_assets):
+                self._rebuild_model(animate=False)
+        elif self._model.rowCount():
+            # Rows are full-width: re-query sizeHint so they track the new width.
+            self.delegate.sizeHintChanged.emit(self._model.index(0, 0))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -561,6 +627,8 @@ class AssetBrowser(QListView):
 
     def _col_count(self) -> int:
         """How many card columns fit in the current viewport width."""
+        if self._view_mode != "grid":
+            return 1   # list / compact are single-column
         gw = self.gridSize().width()
         return max(1, self.viewport().width() // gw) if gw > 0 else 1
 
@@ -599,6 +667,37 @@ class AssetBrowser(QListView):
                 all_rows.append(_make_spacer())
                 cur += 1
 
+        # Size/date are only shown in list view, so only stat there (keeps the
+        # grid rebuild free of filesystem I/O).
+        want_stat = (self._view_mode == "list")
+
+        def _set_file_meta(item, path):
+            if not want_stat:
+                return
+            item.setData(self._depth_of(path), DEPTH_ROLE)
+            try:
+                st = path.stat()
+                item.setData(st.st_size, SIZE_ROLE)
+                item.setData(st.st_mtime, DATE_ROLE)
+            except OSError:
+                pass
+
+        def _set_mat_meta(item, mat):
+            if not want_stat:
+                return
+            item.setData(self._depth_of(mat.path), DEPTH_ROLE)
+            size, mt = 0, 0.0
+            for mp in mat.maps:
+                try:
+                    st = mp.path.stat()
+                    size += st.st_size
+                    mt = max(mt, st.st_mtime)
+                except OSError:
+                    pass
+            item.setData(size, SIZE_ROLE)
+            if mt:
+                item.setData(mt, DATE_ROLE)
+
         for mat in self._current_materials:
             is_expanded = mat.rel_path in self._expanded_materials
 
@@ -619,6 +718,7 @@ class AssetBrowser(QListView):
             item.setData(True, Qt.UserRole + 6)
             item.setData(is_expanded, Qt.UserRole + 7)
             item.setData(self._mat_res(mat), Qt.UserRole + 9)
+            _set_mat_meta(item, mat)
             item.setEditable(False)
             all_rows.append(item)
             cur += 1
@@ -642,6 +742,7 @@ class AssetBrowser(QListView):
                     child.setData(False, Qt.UserRole + 7)
                     child.setData(True, Qt.UserRole + 8)
                     child.setData(self._res_tag(a.filename), Qt.UserRole + 9)
+                    _set_file_meta(child, a.path)
                     child.setEditable(False)
                     all_rows.append(child)
                     cur += 1
@@ -662,6 +763,7 @@ class AssetBrowser(QListView):
             item.setData(False, Qt.UserRole + 6)
             item.setData(False, Qt.UserRole + 7)
             item.setData(self._res_tag(asset.filename), Qt.UserRole + 9)
+            _set_file_meta(item, asset.path)
             item.setEditable(False)
             all_rows.append(item)
             cur += 1
@@ -678,7 +780,9 @@ class AssetBrowser(QListView):
             # Pre-fetch thumbnails for the first visible page immediately —
             # before paint() is called — so images start decoding right away.
             cols          = self._col_count()
-            visible_rows  = max(2, self.viewport().height() // max(1, self.gridSize().height()) + 1)
+            row_h         = (self.gridSize().height() if self._view_mode == "grid"
+                             else self.delegate.row_height())
+            visible_rows  = max(2, self.viewport().height() // max(1, row_h) + 1)
             limit         = cols * visible_rows
             fetched       = 0
             for item in all_rows:
