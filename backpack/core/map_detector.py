@@ -19,6 +19,7 @@ IS_RAW[sub_type]          → True if the map should be loaded as linear/raw dat
 """
 
 import re
+from functools import lru_cache
 from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,6 +205,7 @@ PREFERRED_ORDER = [
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=8192)
 def _clean_stem(stem: str) -> str:
     """Strip resolution, variant, and LOD suffixes from a filename stem."""
     s = stem
@@ -222,6 +224,7 @@ def _split_parts(stem: str) -> list[str]:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=8192)
 def detect_sub_type(filename_or_stem: str) -> str:
     """Detect PBR map sub-type from a filename or stem.
 

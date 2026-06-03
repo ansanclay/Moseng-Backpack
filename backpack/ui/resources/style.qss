@@ -1,7 +1,6 @@
 /* =============================================================================
-   Moseng Backpack v2 — UI Theme
-   Matches the v2 HTML design: DM Sans font, near-transparent cards,
-   6% white borders, accent blue #002aff, dark glassmorphic panels.
+   Moseng Backpack — UI Theme
+   Forest green (#1E3327) base · cream (#F2EACB) text · amber (#C4A84A) accent
    ============================================================================= */
 
 * {
@@ -24,9 +23,50 @@ QWidget {
 #topBar {
     background-color: $surface_low;
     border-bottom: 1px solid $border;
-    min-height: 44px;
-    max-height: 44px;
+    min-height: 34px;
+    max-height: 34px;
 }
+
+QToolButton#topBarBtn,
+QPushButton#topBarBtn {
+    background: transparent;
+    color: $text_low;
+    border: none;
+    border-radius: 4px;
+    font-size: 11px;
+    padding: 3px 8px;
+    font-family: "DM Sans", "Inter", "Segoe UI", sans-serif;
+}
+QToolButton#topBarBtn:hover,
+QPushButton#topBarBtn:hover {
+    background: rgba(255,255,255,10);
+    color: $text;
+}
+QToolButton#topBarBtn::menu-indicator { image: none; }
+
+/* ── Custom title bar: window title + min/max/close ── */
+QLabel#titleLabel {
+    color: $text_mid;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: "DM Sans", "Inter", "Segoe UI", sans-serif;
+}
+QPushButton#winMin, QPushButton#winMax, QPushButton#winClose {
+    background: transparent;
+    color: $text_mid;
+    border: none;
+    border-radius: 0;
+    font-size: 13px;
+}
+QPushButton#winMin:hover, QPushButton#winMax:hover {
+    background: rgba(255,255,255,22);
+    color: $text;
+}
+QPushButton#winMin:pressed, QPushButton#winMax:pressed {
+    background: rgba(255,255,255,33);
+}
+QPushButton#winClose:hover  { background: #c42b1c; color: #ffffff; }
+QPushButton#winClose:pressed { background: #a8271a; color: #ffffff; }
 
 /* ── Left Sidebar ── */
 #sidebar {
@@ -59,14 +99,13 @@ QPushButton.categoryItem {
 }
 
 QPushButton.categoryItem:hover {
-    background-color: rgba(255,255,255,25);
+    background-color: rgba(242,238,220,18);
     color: $text;
 }
 
 QPushButton.categoryItem:checked {
     background-color: $primary_bg;
     color: $primary_hover;
-    border-left: 2px solid $primary;
 }
 
 /* ── Tag chips in sidebar ── */
@@ -80,14 +119,14 @@ QPushButton.tagChip {
 }
 
 QPushButton.tagChip:hover {
-    background-color: rgba(255,255,255,10);
+    background-color: rgba(242,238,220,10);
     color: $text;
 }
 
 QPushButton.tagChip:checked {
-    background-color: $primary_bg;
-    color: $primary_hover;
-    border: 1px solid $primary;
+    background-color: $secondary_bg;
+    color: $secondary_hover;
+    border: 1px solid $secondary;
 }
 
 /* ── Grid Browser ── */
@@ -110,13 +149,13 @@ QScrollBar:vertical {
 }
 
 QScrollBar::handle:vertical {
-    background-color: rgba(255,255,255,15);
+    background-color: rgba(242,238,220,18);
     border-radius: 2px;
     min-height: 24px;
 }
 
 QScrollBar::handle:vertical:hover {
-    background-color: rgba(255,255,255,30);
+    background-color: rgba(242,238,220,38);
 }
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
@@ -132,7 +171,7 @@ QScrollBar:horizontal {
 }
 
 QScrollBar::handle:horizontal {
-    background-color: rgba(255,255,255,15);
+    background-color: rgba(242,238,220,18);
     border-radius: 2px;
     min-width: 24px;
 }
@@ -152,7 +191,7 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
 
 /* ── Status Bar ── */
 QStatusBar {
-    background-color: rgba(4,6,15,178);
+    background-color: $surface_low;
     color: $text_low;
     border-top: 1px solid $border;
     font-size: 10px;
@@ -162,7 +201,7 @@ QStatusBar {
 
 /* ── Buttons (default) ── */
 QPushButton {
-    background-color: rgba(255,255,255,15);
+    background-color: rgba(242,238,220,8);
     color: $text_mid;
     border: 1px solid $border;
     border-radius: 6px;
@@ -171,28 +210,28 @@ QPushButton {
 }
 
 QPushButton:hover {
-    background-color: rgba(255,255,255,25);
+    background-color: rgba(242,238,220,14);
     color: $text;
     border-color: $border_hover;
 }
 
 QPushButton:pressed {
-    background-color: rgba(255,255,255,10);
+    background-color: $pressed_bg;
 }
 
 /* Primary action button */
 QPushButton#primaryBtn {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 $primary, stop:1 #1a30d4);
-    color: #ffffff;
+    background: $primary;
+    color: #1C2420;
     border: none;
-    font-weight: 600;
+    font-weight: 700;
     font-size: 11.5px;
     border-radius: 7px;
     padding: 6px 18px;
 }
 
 QPushButton#primaryBtn:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 $primary_hover, stop:1 #2a40e4);
+    background: $primary_hover;
 }
 
 QPushButton#primaryBtn:pressed {
@@ -280,7 +319,7 @@ QLabel#mapLabel {
 
 /* ── Text / Line Inputs ── */
 QTextEdit {
-    background-color: rgba(255,255,255,10);
+    background-color: rgba(242,238,220,6);
     color: $text;
     border: 1px solid $border;
     border-radius: 6px;
@@ -291,11 +330,11 @@ QTextEdit {
 
 QTextEdit:focus {
     border-color: $primary;
-    background-color: rgba(255,255,255,15);
+    background-color: rgba(242,238,220,10);
 }
 
 QLineEdit {
-    background-color: rgba(255,255,255,10);
+    background-color: rgba(242,238,220,6);
     color: $text;
     border: 1px solid $border;
     border-radius: 6px;
@@ -305,7 +344,7 @@ QLineEdit {
 
 QLineEdit:focus {
     border-color: $primary;
-    background-color: rgba(255,255,255,15);
+    background-color: rgba(242,238,220,10);
 }
 
 /* ── Progress Bar ── */
@@ -346,7 +385,7 @@ QListWidget::item:selected {
 }
 
 QListWidget::item:hover {
-    background-color: rgba(255,255,255,8);
+    background-color: rgba(242,238,220,8);
 }
 
 /* ── Splitter ── */
@@ -381,7 +420,7 @@ QMenu::item {
 }
 
 QMenu::item:selected {
-    background-color: rgba(255,255,255,12);
+    background-color: rgba(242,238,220,12);
     color: $text;
 }
 
@@ -393,7 +432,7 @@ QMenu::separator {
 
 /* ── Favorite Button ── */
 QPushButton#favBtn {
-    background: rgba(255,255,255,8);
+    background: rgba(242,238,220,6);
     color: $text_low;
     border: 1px solid $border;
     border-radius: 6px;
@@ -403,7 +442,7 @@ QPushButton#favBtn {
 QPushButton#favBtn:hover {
     border-color: $primary;
     color: $text;
-    background: rgba(255,255,255,15);
+    background: rgba(242,238,220,12);
 }
 
 QPushButton#favBtn:checked {
@@ -414,9 +453,9 @@ QPushButton#favBtn:checked {
 
 /* ── Tag +Add Button ── */
 QPushButton#tagAddBtn {
-    background: $primary_bg;
-    color: $primary_hover;
-    border: 1px solid $primary;
+    background: $secondary_bg;
+    color: $secondary_hover;
+    border: 1px solid $secondary;
     border-radius: 5px;
     font-size: 10.5px;
     font-weight: 600;
@@ -425,13 +464,13 @@ QPushButton#tagAddBtn {
     max-height: 24px;
 }
 
-QPushButton#tagAddBtn:hover    { background: $primary; color: #ffffff; }
-QPushButton#tagAddBtn:pressed  { background: $primary_pressed; }
+QPushButton#tagAddBtn:hover    { background: $secondary; color: $surface; }
+QPushButton#tagAddBtn:pressed  { background: $secondary_pressed; }
 
 /* ── Copy as Half Resolution Button ── */
 QPushButton#dsHalfBtn {
     background: $primary;
-    color: #ffffff;
+    color: #1E3327;
     border: none;
     border-radius: 6px;
     font-size: 11px;
@@ -470,4 +509,386 @@ QHeaderView::section {
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 1px;
+}
+
+/* ── Toolbar checkable buttons (sort / view / quick-filter) ── */
+QPushButton#subToolbarBtn {
+    background: transparent;
+    color: $text_low;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 9px;
+    font-size: 11px;
+    min-height: 22px;
+}
+QPushButton#subToolbarBtn:hover {
+    background: rgba(255,255,255,10);
+    color: $text;
+}
+QPushButton#subToolbarBtn:checked {
+    background: $primary_bg;
+    color: $primary_hover;
+    border: 1px solid $primary;
+}
+
+/* ── Resolution chip (sidebar) ── */
+QPushButton#resChip {
+    background: transparent;
+    color: $text_low;
+    border: none;
+    border-radius: 5px;
+    padding: 3px 12px;
+    text-align: left;
+    font-size: 11px;
+    min-height: 26px;
+}
+QPushButton#resChip:hover {
+    background: rgba(255,255,255,10);
+    color: $text;
+}
+QPushButton#resChip:checked {
+    background: $primary_bg;
+    color: $primary_hover;
+    border: 1px solid $primary;
+}
+
+/* ── Filter panel: add / sort / search / active-filter bar / empty hint ── */
+QPushButton#tagAddBtn {
+    background: rgba(255,255,255,10);
+    color: $primary;
+    border: 1px solid $border;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 600;
+}
+QPushButton#tagAddBtn:hover {
+    background: rgba(255,255,255,20);
+    border-color: $border_hover;
+}
+
+QPushButton#tagSortBtn {
+    background: transparent;
+    color: $text_low;
+    border: 1px solid $border;
+    border-radius: 4px;
+    padding: 0 8px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+QPushButton#tagSortBtn:hover {
+    color: $text;
+    border-color: $border_hover;
+    background: rgba(255,255,255,13);
+}
+
+QLineEdit#filterSearch {
+    background: $surface;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: 5px;
+    padding: 3px 8px;
+    font-size: 11px;
+    min-height: 22px;
+    selection-background-color: $primary;
+}
+QLineEdit#filterSearch:focus {
+    border-color: $primary;
+}
+
+#filterMetaBar { background: transparent; }
+QLabel#filterCount {
+    color: $text_mid;
+    font-size: 10px;
+    font-weight: 600;
+}
+QPushButton#filterClear {
+    background: transparent;
+    color: $primary;
+    border: none;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 4px;
+}
+QPushButton#filterClear:hover {
+    color: $primary_hover;
+}
+
+QLabel#tagEmptyHint {
+    color: $text_low;
+    font-size: 10.5px;
+    padding: 16px 12px;
+}
+
+/* ── Collection (tray) panel ── */
+#collectionPanel { background: $surface_low; }
+QLabel#collectionCount {
+    color: $text_mid;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+QPushButton#collectionAdd,
+QPushButton#collectionRemove,
+QPushButton#collectionClear {
+    border-radius: 5px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QPushButton#collectionAdd {
+    background: $primary_bg;
+    color: $primary_hover;
+    border: 1px solid $primary;
+}
+QPushButton#collectionAdd:hover { background: $surface_focus; }
+QPushButton#collectionRemove,
+QPushButton#collectionClear {
+    background: transparent;
+    color: $text_low;
+    border: 1px solid $border;
+}
+QPushButton#collectionRemove:hover,
+QPushButton#collectionClear:hover {
+    color: $text;
+    border-color: $border_hover;
+    background: rgba(255,255,255,13);
+}
+QPushButton#collectionRemove:disabled,
+QPushButton#collectionClear:disabled {
+    color: $text_low;
+    border-color: $border;
+}
+QLabel#collectionEmpty {
+    color: $text_low;
+    font-size: 12px;
+    padding: 20px;
+}
+
+/* ── Quick-Open palette (Ctrl+K) ── */
+QFrame#quickOpen {
+    background: $surface_mid;
+    border: 1px solid $primary;
+    border-radius: 10px;
+}
+QLineEdit#quickOpenInput {
+    background: $surface;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 14px;
+    selection-background-color: $primary;
+}
+QLineEdit#quickOpenInput:focus { border-color: $primary; }
+QListWidget#quickOpenList {
+    background: transparent;
+    border: none;
+    outline: none;
+    font-size: 12px;
+    color: $text_mid;
+}
+QListWidget#quickOpenList::item {
+    padding: 5px 8px;
+    border-radius: 5px;
+}
+QListWidget#quickOpenList::item:selected {
+    background: $primary_bg;
+    color: $primary_hover;
+}
+
+/* ── Synapse "show all connections" toggle ── */
+QPushButton#synapseShowAll {
+    background: $surface_mid;
+    color: $text_mid;
+    border: 1px solid $border;
+    border-radius: 11px;
+    padding: 3px 11px;
+    font-size: 10px;
+    font-weight: 600;
+}
+QPushButton#synapseShowAll:hover {
+    color: $text;
+    border-color: $border_hover;
+}
+QPushButton#synapseShowAll:checked {
+    background: $primary_bg;
+    color: $primary_hover;
+    border-color: $primary;
+}
+
+/* ── 3D View button (detail panel) ── */
+QPushButton#view3dBtn {
+    background: $primary;
+    color: $surface;
+    border: none;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 10px;
+}
+QPushButton#view3dBtn:hover  { background: $primary_hover; }
+QPushButton#view3dBtn:pressed{ background: $primary_pressed; }
+
+/* ── Houdini "Build RS Material" button (detail panel) ── */
+QPushButton#houdiniBtn {
+    background: $primary_bg;
+    color: $primary_hover;
+    border: 1px solid $primary;
+    border-radius: 5px;
+    font-size: 11px;
+    padding: 0 10px;
+    text-align: left;
+}
+QPushButton#houdiniBtn:hover    { background: $surface_focus; border-color: $primary_hover; color: $text; }
+QPushButton#houdiniBtn:pressed  { background: $pressed_bg; }
+QPushButton#houdiniBtn:disabled {
+    background: $surface_low;
+    color: $text_low;
+    border-color: $border;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Qt Advanced Docking System (QtAds) — 3D-app-style dockable panels
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+ads--CDockManager,
+ads--CDockContainerWidget {
+    background: $surface;
+}
+
+/* Panel content frame */
+ads--CDockWidget {
+    background: $surface_low;
+    border: none;
+}
+
+/* Dock area (group of tabbed panels) + its title bar */
+ads--CDockAreaWidget {
+    background: $surface_low;
+    border: 1px solid $border;
+}
+
+ads--CDockAreaTitleBar {
+    background: $surface_low;
+    border-bottom: 1px solid $border;
+    padding: 0;
+    qproperty-spacing: 0;
+}
+
+/* Tabs — slim, sized to text */
+ads--CDockWidgetTab {
+    background: $surface_low;
+    border: none;
+    border-right: 1px solid $border;
+    padding: 1px 6px;
+    min-height: 18px;
+}
+
+ads--CDockWidgetTab[activeTab="false"]:hover {
+    background: $surface_mid;
+}
+
+ads--CDockWidgetTab[activeTab="true"] {
+    background: $primary_bg;
+    border-bottom: 2px solid $primary;
+}
+
+/* The panel you're interacting with (FocusHighlighting) gets a brighter accent
+   so the focused panel reads clearly — pairs with the white drop overlay. */
+ads--CDockWidgetTab[focused="true"] {
+    background: $surface_focus;
+    border-bottom: 2px solid $primary_hover;
+}
+
+ads--CDockWidgetTab[focused="true"] QLabel {
+    color: $secondary;
+}
+
+ads--CDockWidgetTab QLabel {
+    color: $text_low;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+ads--CDockWidgetTab[activeTab="true"] QLabel {
+    color: $primary_hover;
+}
+
+/* Per-tab close button — overlaid at the right edge, faded in on hover (Python) */
+ads--CDockWidgetTab QPushButton#tabCloseButton {
+    border: none;
+    background: transparent;
+    padding: 0;
+}
+
+ads--CDockWidgetTab QPushButton#tabCloseButton:hover {
+    background: $surface_high;
+    border-radius: 3px;
+}
+
+/* Title-bar buttons (undock / options) */
+ads--CTitleBarButton {
+    background: transparent;
+    border: none;
+    padding: 2px;
+}
+
+ads--CTitleBarButton:hover {
+    background: $surface_high;
+    border-radius: 4px;
+}
+
+/* Per-panel '+' add-panel button (right edge of each panel's title bar) */
+QToolButton#addPanelBtn {
+    background: transparent;
+    color: $text_mid;
+    border: none;
+    border-radius: 0;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 0;
+}
+
+QToolButton#addPanelBtn:hover {
+    color: $primary_hover;
+    background: $primary_bg;
+    border-radius: 0;
+}
+
+QToolButton#addPanelBtn::menu-indicator {
+    image: none;
+    width: 0;
+}
+
+/* Splitter handles between docked panels */
+ads--CDockContainerWidget QSplitter::handle {
+    background: $border;
+}
+
+ads--CDockContainerWidget QSplitter::handle:hover {
+    background: $primary;
+}
+
+/* Floating panel frame */
+ads--CFloatingDockContainer {
+    background: $surface;
+    border: 1px solid $border_hover;
+}
+
+/* Drag preview — the snapshot that follows the cursor while moving a panel.
+   An accent border makes the moving panel read clearly against the layout. */
+ads--CFloatingDragPreview {
+    background: $surface_low;
+    border: 2px solid $primary;
+}
+
+/* Drop-zone indicators while dragging a panel — themed to the app palette
+   (the default is a clashing bright blue). */
+ads--CDockOverlayCross {
+    qproperty-iconFrameColor: $border_hover;
+    qproperty-iconBackgroundColor: $surface_low;
+    qproperty-iconOverlayColor: $primary;
+    qproperty-iconArrowColor: $primary_hover;
+    qproperty-iconShadowColor: #000000;
 }

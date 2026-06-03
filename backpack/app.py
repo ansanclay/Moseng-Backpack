@@ -1,5 +1,6 @@
 """Application setup and launch."""
 
+import logging
 import sys
 from pathlib import Path
 
@@ -14,24 +15,57 @@ _fmt.setProfile(QSurfaceFormat.CoreProfile)
 _fmt.setSamples(4)
 QSurfaceFormat.setDefaultFormat(_fmt)
 
-from backpack.core.settings import AppSettings, load_settings, save_settings
+from backpack.core.settings import AppSettings, load_settings, save_settings, SETTINGS_DIR
 from backpack.ui.main_window import MainWindow
 from backpack.ui.drive_selector import DriveSelector
 
 
-def load_stylesheet(app: QApplication, accent: str | None = None):
-    """Load and apply style.qss, substituting colour tokens.
+def configure_logging(debug: bool) -> None:
+    """Configure root logger.  Call at startup and whenever debug_mode changes."""
+    root = logging.getLogger()
+    root.handlers.clear()
 
-    accent: the user's chosen accent color (settings.accent_color).
-    Overrides $primary and its derived tokens so the QSS stays in sync
-    with whatever the user has picked in Settings.
-    """
+    fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+                            datefmt="%H:%M:%S")
+
+    if debug:
+        root.setLevel(logging.DEBUG)
+
+        # Console handler
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(logging.DEBUG)
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+
+        # File handler — always written to settings dir so it's easy to find
+        SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(SETTINGS_DIR / "debug.log", encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+    else:
+        root.setLevel(logging.WARNING)
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(logging.WARNING)
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+
+
+def load_stylesheet(
+    app: QApplication,
+    accent: str | None = None,
+    secondary_color: str | None = None,
+    background: str | None = None,
+):
+    """Load and apply style.qss, substituting colour tokens."""
     from string import Template
     from backpack.ui import theme
     style_path = Path(__file__).parent / "ui" / "resources" / "style.qss"
     if style_path.exists():
         raw = style_path.read_text(encoding="utf-8")
-        styled = Template(raw).safe_substitute(theme.as_dict(accent))
+        styled = Template(raw).safe_substitute(
+            theme.as_dict(accent, secondary_color, background)
+        )
         app.setStyleSheet(styled)
 
 
@@ -57,12 +91,13 @@ def _run():
         app.setWindowIcon(QIcon(str(_ico)))
 
     settings = load_settings()
+    configure_logging(settings.debug_mode)
 
     # Apply font
     font = QFont(settings.font_family, settings.font_size)
     app.setFont(font)
 
-    load_stylesheet(app, settings.accent_color)
+    load_stylesheet(app, settings.accent_color, settings.secondary_color, settings.bg_color)
 
     # Check for drive
     drive_letter = settings.drive_letter
@@ -81,8 +116,31 @@ def _run():
     settings.drive_letter = drive_letter
     save_settings(settings)
 
+    # Loading screen — describes each startup phase while the workspace and
+    # asset library load (the work below is largely synchronous).
+    from backpack.ui.splash import StartupSplash
+    splash = StartupSplash(settings.accent_color, settings.bg_color,
+                           settings.secondary_color, _ico if _ico.exists() else None)
+    splash.show()
+    splash.set_status("Preparing workspace…", 0.15)
+
+    splash.set_status("Building panels…", 0.40)
     window = MainWindow(settings)
-    window.init_drive(drive_letter)
+
+    # init_drive reports its sub-steps (tag library, folder tree, last folder)
+    # through this callback; advance the strip a little on each.
+    _prog = [0.55]
+
+    def _on_phase(text: str):
+        _prog[0] = min(0.93, _prog[0] + 0.10)
+        splash.set_status(text, _prog[0])
+
+    splash.set_status("Loading asset library…", 0.55)
+    window.init_drive(drive_letter, _on_phase)
+
+    splash.set_status("Ready", 1.0)
     window.show()
+    window.raise_()
+    splash.close()
 
     sys.exit(app.exec())

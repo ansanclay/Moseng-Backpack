@@ -12,7 +12,10 @@ from PySide6.QtWidgets import (
     QLayout, QSizePolicy, QLineEdit, QStackedWidget, QMenu,
     QGraphicsDropShadowEffect,
 )
-from PySide6.QtCore import Qt, Signal, QRect, QSize, QEvent, QRunnable, QThreadPool, QObject, QTimer
+from PySide6.QtCore import (
+    Qt, Signal, QRect, QRectF, QSize, QPoint, QPointF,
+    QEvent, QRunnable, QThreadPool, QObject, QTimer,
+)
 from PySide6.QtGui import (
     QPixmap, QImage, QPainter, QColor, QFont, QImageReader,
     QFontMetrics, QPixmapCache, QAction,
@@ -25,7 +28,37 @@ from backpack.core.metadata import (
 from backpack.core.downscale import (
     get_available_resolutions, downscale_material, half_resolution,
 )
-from backpack.constants import random_blue, random_tag_color
+from backpack.constants import random_blue, random_tag_color, tag_color_for_name
+
+# Extensions that get the full image viewer; everything else hides it.
+_IMAGE_PREVIEW_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".tif", ".tiff",
+                       ".exr", ".hdr"}
+
+# OS file-type icon (the icon Windows registers for .hip/.fbx/…) for the small
+# logo shown beside the title of a non-image file. Cached per extension.
+_icon_provider = None
+_sys_icon_cache: dict = {}
+
+
+def _file_type_pix(path):
+    """Cached OS file-type icon for *path*'s extension, or None."""
+    ext = Path(path).suffix.lower()
+    if ext in _sys_icon_cache:
+        return _sys_icon_cache[ext]
+    global _icon_provider
+    try:
+        from PySide6.QtWidgets import QFileIconProvider
+        from PySide6.QtCore import QFileInfo
+        if _icon_provider is None:
+            _icon_provider = QFileIconProvider()
+        icon = _icon_provider.icon(QFileInfo(str(path)))
+        pm = icon.pixmap(64, 64) if not icon.isNull() else None
+        if pm is not None and pm.isNull():
+            pm = None
+    except Exception:
+        pm = None
+    _sys_icon_cache[ext] = pm
+    return pm
 
 
 class FlowLayout(QLayout):
@@ -159,7 +192,9 @@ class TagSuggestOverlay(QFrame):
         tag_widths = []
         for t in matches[:30]:
             info = self._tag_registry.get(t)
-            color = info.color if info and info.color else "#002aff"
+            color = info.color if info and info.color else tag_color_for_name(t)
+            _c = QColor(color)
+            hover = f"rgba({_c.red()},{_c.green()},{_c.blue()},200)"
             btn = QPushButton(t)
             btn.setFixedHeight(22)
             btn.setCursor(Qt.PointingHandCursor)
@@ -169,7 +204,7 @@ class TagSuggestOverlay(QFrame):
                     border-radius: 11px; border: none;
                     font-size: 11px; font-weight: 600; padding: 0 9px;
                 }}
-                QPushButton:hover {{ background: {color}cc; }}
+                QPushButton:hover {{ background: {hover}; }}
             """)
             btn.clicked.connect(lambda _, tag=t: self.tag_selected.emit(tag))
             self._flow.addWidget(btn)
@@ -322,6 +357,7 @@ class TagLabel(QWidget):
 
         # Colored pill background via a container widget
         self._pill = QWidget()
+        self._pill.setObjectName("tagPill")
         self._pill.setFixedHeight(24)
         pill_layout = QHBoxLayout(self._pill)
         pill_layout.setContentsMargins(8, 0, 4, 0)
@@ -350,22 +386,24 @@ class TagLabel(QWidget):
         self._x_btn.clicked.connect(lambda: self.remove_requested.emit(self.tag_name))
         pill_layout.addWidget(self._x_btn)
 
+        # Build real rgba() strings — Qt parses 8-digit hex as #AARRGGBB, which
+        # would scramble the channels (e.g. pink #c199a3 + "30" -> olive).
+        c = QColor(color)
+        r, g, b = c.red(), c.green(), c.blue()
         if partial:
-            # Mixed-state: translucent fill + dashed border
             self._pill.setStyleSheet(f"""
-                QWidget {{
-                    background-color: {color}28;
+                QWidget#tagPill {{
+                    background-color: rgba({r},{g},{b},40);
                     border-radius: 12px;
-                    border: 1px dashed {color}80;
+                    border: 1px dashed rgba({r},{g},{b},128);
                 }}
             """)
         else:
-            # v2: muted semi-transparent chip — color at ~18% alpha
             self._pill.setStyleSheet(f"""
-                QWidget {{
-                    background-color: {color}30;
+                QWidget#tagPill {{
+                    background-color: rgba({r},{g},{b},48);
                     border-radius: 12px;
-                    border: 1px solid {color}60;
+                    border: 1px solid rgba({r},{g},{b},96);
                 }}
             """)
         layout.addWidget(self._pill)
@@ -477,6 +515,274 @@ class MapBadge(QWidget):
         lay.addWidget(fl, stretch=1)
 
 
+class _PreviewView(QWidget):
+    """Adaptive, zoomable, pannable image preview.
+
+    • Fit mode COVERS the region exactly (no black bands) — the host sizes the
+      region height to the image aspect via `ideal_height`.
+    • Wheel zooms (anchored at the cursor); drag pans when zoomed.
+    • A floating preset toolbar (Fit / 100 / 200 / 400 / 800 %) overlays the
+      bottom of the view.
+    Zooming happens inside the fixed-height region (a viewport); the region
+    itself does not grow. A checkerboard shows behind transparent pixels.
+    """
+
+    _BG    = QColor("#07080d")
+    _CHK_A = QColor("#3a3f3c")
+    _CHK_B = QColor("#2a2f2c")
+    _CELL  = 9
+    _MIN_H = 90
+    _MAX_H = 420
+    _DEFAULT_H = 200
+    _PRESETS = [("Fit", "fit"), ("100%", 1.0), ("200%", 2.0),
+                ("400%", 4.0), ("800%", 8.0)]
+    _MIN_SCALE = 0.1
+    _MAX_SCALE = 8.0
+
+    content_changed = Signal()   # emitted when the image (aspect) changes
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pix: QPixmap | None = None
+        self._text: str = ""
+        self._aspect: float | None = None
+        self._fit = True                 # fit (cover) mode vs explicit scale
+        self._scale = 1.0                # screen px per pixmap px (non-fit)
+        self._offset = QPointF(0, 0)     # image top-left in widget coords
+        self._panning = False
+        self._pan_anchor = QPoint()
+        self._off_anchor = QPointF()
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMouseTracking(True)
+        self._build_zoombar()
+
+    # ── zoom preset toolbar (overlay) ───────────────────────────────────────
+    def _build_zoombar(self):
+        self._zoombar = QWidget(self)
+        self._zoombar.setObjectName("zoomBar")
+        self._zoombar.setStyleSheet("""
+            QWidget#zoomBar { background: rgba(10,12,18,205);
+                              border: 1px solid #20222e; border-radius: 11px; }
+            QWidget#zoomBar QPushButton {
+                background: transparent; color: #9a9da8; border: none;
+                border-radius: 8px; font-size: 10px; font-weight: 600;
+                padding: 2px 7px;
+                font-family: "DM Sans","Inter","Segoe UI",sans-serif;
+            }
+            QWidget#zoomBar QPushButton:hover { color: #e8eaf0; background: rgba(255,255,255,22); }
+            QWidget#zoomBar QPushButton:checked { color: #ffffff; background: rgba(255,255,255,34); }
+        """)
+        lay = QHBoxLayout(self._zoombar)
+        lay.setContentsMargins(4, 3, 4, 3)
+        lay.setSpacing(1)
+        self._preset_btns: dict[str, QPushButton] = {}
+        for label, val in self._PRESETS:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(18)
+            b.clicked.connect(lambda _=False, v=val: self.set_preset(v))
+            lay.addWidget(b)
+            self._preset_btns[label] = b
+        self._zoombar.hide()
+        self._update_preset_checks()
+
+    def _position_zoombar(self):
+        self._zoombar.adjustSize()
+        x = (self.width() - self._zoombar.width()) // 2
+        y = self.height() - self._zoombar.height() - 6
+        self._zoombar.move(max(0, x), max(0, y))
+
+    # ── public API (mirrors old QLabel calls) ───────────────────────────────
+    def setPixmap(self, pix: QPixmap):
+        if pix is None or pix.isNull():
+            self._pix = None
+            self._aspect = None
+        else:
+            self._pix = pix
+            self._aspect = (pix.width() / pix.height()) if pix.height() else None
+            self._text = ""
+        self._fit = True                 # every new image starts fitted
+        self._scale = 1.0
+        self._offset = QPointF(0, 0)
+        self._zoombar.setVisible(self._pix is not None)
+        self._update_preset_checks()
+        self._position_zoombar()
+        self.update()
+        self.content_changed.emit()
+
+    def setText(self, text: str):
+        self._text = text or ""
+        self._pix = None
+        self._aspect = None
+        self._fit = True
+        self._zoombar.hide()
+        self.update()
+        self.content_changed.emit()
+
+    def ideal_height(self, width: int) -> int:
+        """Region height matching the image aspect at *width* (clamped)."""
+        if not self._aspect or width < 10:
+            return self._DEFAULT_H
+        h = round(width / self._aspect)
+        return max(self._MIN_H, min(self._MAX_H, h))
+
+    # ── scale / offset model ────────────────────────────────────────────────
+    def _fit_scale(self) -> float:
+        if not self._pix:
+            return 1.0
+        pw, ph = self._pix.width(), self._pix.height()
+        if pw == 0 or ph == 0:
+            return 1.0
+        return max(self.width() / pw, self.height() / ph)   # cover
+
+    def _eff_scale(self) -> float:
+        return self._fit_scale() if self._fit else self._scale
+
+    def _eff_offset(self) -> QPointF:
+        if self._fit:
+            s = self._fit_scale()
+            return QPointF((self.width()  - self._pix.width()  * s) / 2,
+                           (self.height() - self._pix.height() * s) / 2)
+        return self._offset
+
+    def _clamp_offset(self, off: QPointF) -> QPointF:
+        sw = self._pix.width()  * self._scale
+        sh = self._pix.height() * self._scale
+        x, y = off.x(), off.y()
+        x = (self.width()  - sw) / 2 if sw <= self.width()  else min(0.0, max(self.width()  - sw, x))
+        y = (self.height() - sh) / 2 if sh <= self.height() else min(0.0, max(self.height() - sh, y))
+        return QPointF(x, y)
+
+    # ── presets ─────────────────────────────────────────────────────────────
+    def set_preset(self, val):
+        if not self._pix:
+            return
+        if val == "fit":
+            self._fit = True
+        else:
+            self._fit = False
+            self._scale = float(val)
+            self._offset = self._clamp_offset(QPointF(
+                (self.width()  - self._pix.width()  * self._scale) / 2,
+                (self.height() - self._pix.height() * self._scale) / 2))
+        self._update_preset_checks()
+        self.update()
+
+    def _update_preset_checks(self):
+        active = "Fit" if self._fit else None
+        if not self._fit:
+            for label, val in self._PRESETS:
+                if val != "fit" and abs(self._scale - float(val)) < 1e-3:
+                    active = label
+                    break
+        for label, b in self._preset_btns.items():
+            b.setChecked(label == active)
+
+    # ── events ──────────────────────────────────────────────────────────────
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._fit and self._pix:
+            self._offset = self._clamp_offset(self._offset)
+        self._position_zoombar()
+
+    def wheelEvent(self, event):
+        if not self._pix:
+            return super().wheelEvent(event)
+        old_s = self._eff_scale()
+        old_o = self._eff_offset()
+        step = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
+        new_s = max(self._MIN_SCALE, min(self._MAX_SCALE, old_s * step))
+        pos = event.position()
+        # pixmap-space point under the cursor stays put
+        ix = (pos.x() - old_o.x()) / old_s
+        iy = (pos.y() - old_o.y()) / old_s
+        self._fit = False
+        self._scale = new_s
+        self._offset = self._clamp_offset(
+            QPointF(pos.x() - ix * new_s, pos.y() - iy * new_s))
+        self._update_preset_checks()
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._pix and not self._fit:
+            self._panning = True
+            self._pan_anchor = event.position().toPoint()
+            self._off_anchor = QPointF(self._offset)
+            self.setCursor(Qt.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._panning:
+            d = event.position().toPoint() - self._pan_anchor
+            self._offset = self._clamp_offset(
+                QPointF(self._off_anchor.x() + d.x(), self._off_anchor.y() + d.y()))
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._panning:
+            self._panning = False
+            self.setCursor(Qt.ArrowCursor)
+        super().mouseReleaseEvent(event)
+
+    # ── paint ─────────────────────────────────────────────────────────────────
+    def paintEvent(self, event):
+        p = QPainter(self)
+        r = self.rect()
+        p.fillRect(r, self._BG)
+
+        if self._pix is not None:
+            s = self._eff_scale()
+            off = self._eff_offset()
+            img_rect = QRectF(off.x(), off.y(),
+                              self._pix.width() * s, self._pix.height() * s)
+            p.setClipRect(r)
+            # Checkerboard only under the visible part of the image.
+            vis = r.intersected(img_rect.toRect())
+            if not vis.isEmpty():
+                for yy in range(vis.top(), vis.bottom() + 1, self._CELL):
+                    for xx in range(vis.left(), vis.right() + 1, self._CELL):
+                        odd = ((xx - vis.left()) // self._CELL
+                               + (yy - vis.top()) // self._CELL) % 2
+                        p.fillRect(xx, yy, self._CELL, self._CELL,
+                                   self._CHK_A if odd else self._CHK_B)
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(img_rect, self._pix, QRectF(self._pix.rect()))
+        elif self._text:
+            p.setPen(QColor("#4c4e58"))
+            p.setFont(QFont("DM Sans", 14, QFont.Bold))
+            p.drawText(r, Qt.AlignCenter, self._text)
+        p.end()
+
+
+class _HouProbeSignals(QObject):
+    done = Signal(bool)
+
+
+class _HouProbe(QRunnable):
+    """Probe whether Houdini is listening, OFF the UI thread.
+
+    is_houdini_available() does a blocking socket connect; running it on the
+    main thread every few seconds caused periodic UI freezes. This runs it on a
+    worker and reports the result back via a queued signal.
+    """
+
+    def __init__(self, signals: "_HouProbeSignals"):
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = signals
+
+    def run(self):
+        from backpack.ui.houdini_bridge import is_houdini_available
+        try:
+            online = is_houdini_available()
+        except Exception:
+            online = False
+        self._signals.done.emit(online)
+
+
 class AssetDetailPanel(QWidget):
     refresh_requested = Signal()
     tag_head_changed = Signal(str, object)  # tag_name, asset/material obj
@@ -484,7 +790,7 @@ class AssetDetailPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("detailPanel")
-        self.setFixedWidth(270)
+        self.setMinimumWidth(200)   # adaptive: resizable, no longer pinned
         self._current_asset: ScannedAsset | None = None
         self._current_material: ScannedMaterial | None = None
         self._multi_items: list = []  # list of (kind, obj) for multi-select
@@ -501,8 +807,12 @@ class AssetDetailPanel(QWidget):
         self._note_timer.setInterval(1500)
         self._note_timer.timeout.connect(self._save_notes)
 
-        # Houdini live-status poller (runs every 3 s when panel is visible)
+        # Houdini live-status poller. The socket probe runs on a worker thread
+        # (see _HouProbe) so the 3 s poll never blocks/freezes the UI thread.
         self._hou_online: bool = False
+        self._hou_probing: bool = False
+        self._hou_signals = _HouProbeSignals()
+        self._hou_signals.done.connect(self._on_hou_probe)
         self._hou_poll_timer = QTimer(self)
         self._hou_poll_timer.setInterval(3000)
         self._hou_poll_timer.timeout.connect(self._poll_houdini_status)
@@ -510,6 +820,10 @@ class AssetDetailPanel(QWidget):
 
         self._setup_ui()
         self.show_empty()  # always visible — avoids browser reflow on show/hide
+
+    def sizeHint(self) -> QSize:
+        # Preferred (initial) width; user can resize down to minimumWidth.
+        return QSize(270, super().sizeHint().height())
 
     def set_tag_registry(self, registry: dict, backpack_root: Path):
         self._tag_registry = registry
@@ -522,12 +836,11 @@ class AssetDetailPanel(QWidget):
 
         # ── Preview stack (OUTSIDE scroll area — QOpenGLWidget can't live in QScrollArea) ──
         self._preview_stack = QStackedWidget()
-        self._preview_stack.setFixedHeight(200)
+        self._preview_stack.setFixedHeight(200)   # initial; adapts to image aspect
 
-        # Page 0: static image / multi-grid QLabel
-        self.preview = QLabel()
-        self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setStyleSheet("background-color: #07080d; padding: 4px;")
+        # Page 0: adaptive image preview (checkerboard behind transparency)
+        self.preview = _PreviewView()
+        self.preview.content_changed.connect(self._on_preview_content_changed)
         self._preview_stack.addWidget(self.preview)   # index 0
 
         # Page 1: 3D viewer — created lazily on first use to avoid crash at startup
@@ -535,8 +848,9 @@ class AssetDetailPanel(QWidget):
 
         outer.addWidget(self._preview_stack)
 
-        # ── 3D toggle button row ──
+        # ── 3D toggle button row (only shown for materials) ──
         btn_row_w = QWidget()
+        self._btn_row = btn_row_w
         btn_row_w.setFixedHeight(32)
         btn_row_w.setStyleSheet("background: #07080d;")
         btn_row = QHBoxLayout(btn_row_w)
@@ -544,17 +858,9 @@ class AssetDetailPanel(QWidget):
         btn_row.setSpacing(0)
 
         self._btn_3d = QPushButton("\u25b6  3D View")
+        self._btn_3d.setObjectName("view3dBtn")
         self._btn_3d.setFixedHeight(24)
         self._btn_3d.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_3d.setStyleSheet("""
-            QPushButton {
-                background: #002aff; color: #ffffff;
-                border: none; border-radius: 5px;
-                font-size: 11px; font-weight: 600; padding: 0 10px;
-            }
-            QPushButton:hover { background: #2244ff; }
-            QPushButton:pressed { background: #0018cc; }
-        """)
         self._btn_3d.clicked.connect(self._toggle_3d_view)
         self._btn_3d.hide()
         btn_row.addWidget(self._btn_3d)
@@ -607,11 +913,20 @@ class AssetDetailPanel(QWidget):
         close_row.addWidget(btn_close)
         layout.addLayout(close_row)
 
-        # Name — single line, elides with "…" when too long
+        # Name row — small type logo (upper-left) + name (elides when too long)
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(7)
+        self._title_icon = QLabel()
+        self._title_icon.setFixedSize(20, 20)
+        self._title_icon.setScaledContents(True)
+        self._title_icon.hide()
+        name_row.addWidget(self._title_icon, 0, Qt.AlignTop)
         self.name_label = ElidedLabel()
         self.name_label.setObjectName("heading")
         self.name_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        layout.addWidget(self.name_label)
+        name_row.addWidget(self.name_label, 1)
+        layout.addLayout(name_row)
 
         # Info labels — also elide so they never overflow
         self.type_label = ElidedLabel()
@@ -775,25 +1090,7 @@ class AssetDetailPanel(QWidget):
         self._btn_houdini.setToolTip(
             "Build a Redshift material network in the active Houdini session"
         )
-        self._btn_houdini.setStyleSheet("""
-            QPushButton {
-                background: #0b1a2e;
-                color: #4f8aff;
-                border: 1px solid #1a2e4a;
-                border-radius: 5px;
-                font-size: 11px;
-                font-family: "DM Sans", "Inter", "Segoe UI", sans-serif;
-                padding: 0 10px;
-                text-align: left;
-            }
-            QPushButton:hover  { background: #0e2448; border-color: #2a4a8f; color: #7aaaff; }
-            QPushButton:pressed{ background: #071525; }
-            QPushButton:disabled {
-                background: #08101c;
-                color: #1e2a3a;
-                border-color: #0e161f;
-            }
-        """)
+        self._btn_houdini.setObjectName("houdiniBtn")
         self._btn_houdini.clicked.connect(self._send_to_houdini)
         hou_col.addWidget(self._btn_houdini)
 
@@ -809,6 +1106,51 @@ class AssetDetailPanel(QWidget):
         layout.addStretch()
         scroll.setWidget(content)
 
+    def _on_preview_content_changed(self):
+        # Size now, then again after this layout pass — the widget width may not
+        # be realized yet on the first selection, which previously left the
+        # region at the 200 px default (image short → black band below).
+        self._resize_preview_region()
+        QTimer.singleShot(0, self._resize_preview_region)
+
+    def _resize_preview_region(self):
+        """Size the preview region's height to the current image so it fills
+        the width with no empty bands. 3D viewer manages its own height."""
+        if self._preview_stack.currentIndex() != 0:
+            return
+        # The stack spans the full panel width (outer margins are 0), so the
+        # panel width is the most reliable basis for the fit.
+        w = self.width() if self.width() > 10 else self._preview_stack.width()
+        if w < 10:
+            return
+        h = self.preview.ideal_height(w)
+        self._preview_stack.setMinimumHeight(h)
+        self._preview_stack.setMaximumHeight(h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resize_preview_region()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._resize_preview_region()
+
+    def _show_image_viewer(self):
+        """Reveal the image preview region; hide the title logo."""
+        self._title_icon.hide()
+        self._preview_stack.show()
+
+    def _hide_image_viewer(self, path):
+        """Hide the image preview region (non-image file) and show the file's OS
+        type icon to the left of the title."""
+        self._preview_stack.hide()
+        pm = _file_type_pix(path)
+        if pm is not None:
+            self._title_icon.setPixmap(pm)
+            self._title_icon.show()
+        else:
+            self._title_icon.hide()
+
     def show_empty(self):
         """Show placeholder state when nothing is selected."""
         self._current_asset = None
@@ -818,6 +1160,7 @@ class AssetDetailPanel(QWidget):
         self._last_multi_key = ""
 
         self._preview_stack.setCurrentIndex(0)
+        self._show_image_viewer()
         self.preview.setText("")
         self.preview.setStyleSheet("background-color: #09090f;")
         self.name_label.hide()
@@ -833,6 +1176,7 @@ class AssetDetailPanel(QWidget):
         self.notes.hide()
         self.tags_container.hide()
         self._btn_3d.hide()
+        self._btn_row.hide()
         self._map_indicator.hide()
         self._hou_row.hide()
         self.path_label.setText("")
@@ -859,11 +1203,16 @@ class AssetDetailPanel(QWidget):
         # Reload meta from JSON
         asset.meta = read_asset_meta(asset.path)
 
-        # Use 512x512 preview cache if available — avoids loading full 4K image
-        if asset.preview_cache and asset.preview_cache.exists():
-            self._set_preview_from_path(asset.preview_cache)
-        else:
+        # Image files → full viewer. Non-image → hide the viewer entirely and
+        # show a small type logo beside the title instead.
+        ext = asset.path.suffix.lower()
+        if ext in _IMAGE_PREVIEW_EXTS:
+            self._show_image_viewer()
+            # Load the ORIGINAL image (full resolution) so zoom stays crisp —
+            # not the 512 px browse thumbnail.
             self._set_preview_from_path(asset.path)
+        else:
+            self._hide_image_viewer(asset.path)
         self.name_label.setText(asset.filename)
         self.name_label.show()
         self.type_label.setText(f"{asset.asset_type.title()}  \u00b7  {asset.sub_type}" if asset.sub_type else asset.asset_type.title())
@@ -892,6 +1241,7 @@ class AssetDetailPanel(QWidget):
         self.maps_container.hide()
         self.res_container.hide()
         self._btn_3d.hide()
+        self._btn_row.hide()
         self._map_indicator.hide()
 
         # Show Houdini row for texture assets — adds node to active Material Builder
@@ -908,14 +1258,16 @@ class AssetDetailPanel(QWidget):
 
         # Always return to static preview when switching materials
         self._preview_stack.setCurrentIndex(0)
+        self._show_image_viewer()
 
         mat.meta = read_material_meta(mat.path)
 
-        # Prefer preview cache (512x512), fall back to original preview
-        if mat.preview_cache and mat.preview_cache.exists():
-            self._set_preview_from_path(mat.preview_cache)
-        elif mat.preview_path and mat.preview_path.exists():
+        # Prefer the original full-res preview image (crisp zoom); fall back to
+        # the 512 px cache only if the original isn't available.
+        if mat.preview_path and mat.preview_path.exists():
             self._set_preview_from_path(mat.preview_path)
+        elif mat.preview_cache and mat.preview_cache.exists():
+            self._set_preview_from_path(mat.preview_cache)
         else:
             self.preview.setText("MATERIAL")
 
@@ -955,6 +1307,7 @@ class AssetDetailPanel(QWidget):
 
         # 3D view button — material only, single selection
         self._btn_3d.setText("\u25b6  3D View")
+        self._btn_row.show()
         self._btn_3d.show()
         self._map_indicator.hide()
 
@@ -979,6 +1332,7 @@ class AssetDetailPanel(QWidget):
         )
 
         self._preview_stack.setCurrentIndex(0)
+        self._show_image_viewer()
         if multi_key != self._last_multi_key:
             self._last_multi_key = multi_key
             grid_pix = self._build_multi_preview(_items, count)
@@ -991,6 +1345,7 @@ class AssetDetailPanel(QWidget):
         self.maps_title.hide()
         self.maps_container.hide()
         self._btn_3d.hide()
+        self._btn_row.hide()
         self._map_indicator.hide()
 
         self.res_container.hide()
@@ -1170,8 +1525,10 @@ class AssetDetailPanel(QWidget):
         _HDR_EXTS = {".exr", ".hdr"}
         ext = path.suffix.lower()
 
-        if not path.exists():
-            self._show_ext_placeholder(ext)
+        # Defensive: non-image is normally handled by hiding the viewer in
+        # show_asset(); if we ever get here, just show a short label.
+        if (ext not in _STD_EXTS and ext not in _HDR_EXTS) or not path.exists():
+            self.preview.setText(ext.upper().lstrip(".") or "FILE")
             return
 
         if ext in _STD_EXTS:
@@ -1179,12 +1536,17 @@ class AssetDetailPanel(QWidget):
             reader.setAutoTransform(True)
             sz = reader.size()
             if sz.isValid():
-                reader.setScaledSize(sz.scaled(268, 180, Qt.KeepAspectRatio))
+                # Decode the original at (near) full resolution so the zoom
+                # presets show real detail. Cap the longest side to keep memory
+                # bounded on very large (8K+) images.
+                _MAX = 4096
+                if sz.width() > _MAX or sz.height() > _MAX:
+                    reader.setScaledSize(sz.scaled(_MAX, _MAX, Qt.KeepAspectRatio))
             img = reader.read()
             if not img.isNull():
                 self.preview.setPixmap(QPixmap.fromImage(img))
                 return
-            self._show_ext_placeholder(ext)
+            self.preview.setText(ext.upper().lstrip("."))
 
         elif ext in _HDR_EXTS:
             # Show loading state immediately, decode in background
@@ -1196,13 +1558,10 @@ class AssetDetailPanel(QWidget):
 
             sig = self._HdrSignals()
             sig.ready.connect(lambda img, p=path, e=ext: self._on_hdr_ready(img, p, e))
-            job = self._HdrDecodeJob(str(path), 268, 180, sig)
+            job = self._HdrDecodeJob(str(path), 2048, 2048, sig)
             # Keep reference so signals object isn't GC'd before job finishes
             self._hdr_sig_ref = sig
             QThreadPool.globalInstance().start(job)
-
-        else:
-            self._show_ext_placeholder(ext)
 
     def _on_hdr_ready(self, img, path: Path, ext: str):
         """Called on main thread when HDR decode finishes."""
@@ -1215,15 +1574,7 @@ class AssetDetailPanel(QWidget):
             self.preview.setStyleSheet("background-color: #07080d; padding: 4px;")
             self.preview.setPixmap(QPixmap.fromImage(img))
         else:
-            self._show_ext_placeholder(ext)
-
-    def _show_ext_placeholder(self, ext: str):
-        self.preview.setPixmap(QPixmap())
-        self.preview.setText(ext.upper())
-        self.preview.setStyleSheet(
-            "background-color: #07080d; border-radius: 10px; "
-            "color: #4c4e58; font-size: 20px; font-weight: bold; padding: 4px;"
-        )
+            self.preview.setText(ext.upper().lstrip("."))
 
     def _clear_maps(self):
         while self.maps_layout.count():
@@ -1314,7 +1665,7 @@ class AssetDetailPanel(QWidget):
 
         for t in tags:
             info = self._tag_registry.get(t)
-            color = info.color if info and info.color else "#002aff"
+            color = info.color if info and info.color else tag_color_for_name(t)
             chip = TagLabel(t, color)
             chip.remove_requested.connect(self._remove_tag)
             chip.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1324,7 +1675,7 @@ class AssetDetailPanel(QWidget):
 
         for t in (partial_tags or []):
             info = self._tag_registry.get(t)
-            color = info.color if info and info.color else "#002aff"
+            color = info.color if info and info.color else tag_color_for_name(t)
             chip = TagLabel(t, color, partial=True)
             chip.remove_requested.connect(self._remove_tag)
             chip.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1401,9 +1752,8 @@ class AssetDetailPanel(QWidget):
     def _toggle_3d_view(self):
         """Toggle between static preview (page 0) and 3D viewer (page 1)."""
         if self._preview_stack.currentIndex() == 1:
-            self._preview_stack.setMaximumHeight(200)
-            self._preview_stack.setMinimumHeight(200)
             self._preview_stack.setCurrentIndex(0)
+            self._resize_preview_region()   # back to image-aspect height
             self._btn_3d.setText("\u25b6  3D View")
             self._map_indicator.hide()
             return
@@ -1501,9 +1851,16 @@ class AssetDetailPanel(QWidget):
     # ── Houdini live status ───────────────────────────────────────────────────
 
     def _poll_houdini_status(self) -> None:
-        """Background-safe poll — check if Houdini is listening."""
-        from backpack.ui.houdini_bridge import is_houdini_available
-        online = is_houdini_available()
+        """Kick off an off-thread probe (no UI-thread socket I/O). Skips if a
+        probe is still in flight so slow probes can't pile up."""
+        if self._hou_probing:
+            return
+        self._hou_probing = True
+        QThreadPool.globalInstance().start(_HouProbe(self._hou_signals))
+
+    def _on_hou_probe(self, online: bool) -> None:
+        """Result of an off-thread Houdini probe (runs on the UI thread)."""
+        self._hou_probing = False
         if online != self._hou_online:
             self._hou_online = online
             self._update_hou_status_ui()

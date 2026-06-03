@@ -1,31 +1,27 @@
 """Folder tree model for the BACKPACK filesystem.
 
-Default structure:
+Top-level structure:
   BACKPACK/
-    Materials/
-      PBR_Materials/
-    Images/
-      Textures/     (default_tags: Surface_Imperfections, Displacements, Decals)
-      Photos/
-      Gobos/
-      HDRI/
-    Models/
-      3D_Assets/
-      Foliages/
-    Quixel/         (when quixel_enabled, maps to Quixel/Downloaded/)
-      Materials     → Downloaded/surface/
-      Models        → Downloaded/3d/
-      Foliages      → Downloaded/3dplant/
-      Decals        → Downloaded/atlas/
-      Brushes       → Downloaded/brush/
-      Smart Materials → Downloaded/smartmaterial/
-      (UAssets hidden)
+    ASSETS/       ← all content lives here
+      Materials/
+        PBR_Materials/
+      Images/
+        Textures/  Photos/  Gobos/  HDRI/
+      Models/
+        3D_Assets/  Foliages/
+      Quixel/      (when quixel_enabled → Quixel/Downloaded/)
+    JSON/         ← metadata mirror of ASSETS tree  ({stem}.json)
+    PREVIEWS/     ← preview mirror of ASSETS tree   ({stem}.jpeg, 512 px)
 """
 
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+ASSETS_DIR_NAME  = "ASSETS"
+JSON_DIR_NAME    = "JSON"
+PREVIEWS_DIR_NAME = "PREVIEWS"
 
 
 def disk_to_display(name: str) -> str:
@@ -97,10 +93,15 @@ _DEFAULT_TREE = [
 _USER_FOLDERS_FILE = ".user_folders.json"
 
 
+def _assets_root(backpack_root: Path) -> Path:
+    return backpack_root / ASSETS_DIR_NAME
+
+
 def ensure_default_folders(backpack_root: Path) -> None:
     """Create default folder structure on disk if missing."""
+    assets = _assets_root(backpack_root)
     for cat_name, _, children in _DEFAULT_TREE:
-        cat_path = backpack_root / cat_name
+        cat_path = assets / cat_name
         cat_path.mkdir(parents=True, exist_ok=True)
         for child_name, _, _ in children:
             (cat_path / child_name).mkdir(parents=True, exist_ok=True)
@@ -108,7 +109,7 @@ def ensure_default_folders(backpack_root: Path) -> None:
 
 def ensure_quixel_folders(backpack_root: Path) -> None:
     """Create Quixel Downloaded folder structure on disk."""
-    dl_root = backpack_root / "Quixel" / "Downloaded"
+    dl_root = _assets_root(backpack_root) / "Quixel" / "Downloaded"
     dl_root.mkdir(parents=True, exist_ok=True)
     for disk_name, _, _ in _QUIXEL_SUBDIRS:
         (dl_root / disk_name).mkdir(parents=True, exist_ok=True)
@@ -140,6 +141,7 @@ def build_folder_tree(
     """
     ensure_default_folders(backpack_root)
     user_folders = _load_user_folders(backpack_root)
+    assets = _assets_root(backpack_root)
 
     root = FolderNode(
         disk_name="BACKPACK",
@@ -150,7 +152,7 @@ def build_folder_tree(
     )
 
     for cat_disk, cat_display, defaults in _DEFAULT_TREE:
-        cat_path = backpack_root / cat_disk
+        cat_path = assets / cat_disk
         cat_node = FolderNode(
             disk_name=cat_disk,
             display_name=cat_display,
@@ -175,7 +177,7 @@ def build_folder_tree(
 
         # User-added subfolders for this category
         for user_name in user_folders.get(cat_disk, []):
-            user_path = cat_path / user_name
+            user_path = assets / cat_disk / user_name
             user_path.mkdir(parents=True, exist_ok=True)
             # Infer scan_mode from category
             scan_mode = _infer_scan_mode(cat_disk)
@@ -194,7 +196,7 @@ def build_folder_tree(
     # Quixel node
     if quixel_enabled:
         ensure_quixel_folders(backpack_root)
-        dl_root = backpack_root / "Quixel" / "Downloaded"
+        dl_root = assets / "Quixel" / "Downloaded"
         q_node = FolderNode(
             disk_name="Quixel",
             display_name="Quixel",
@@ -220,6 +222,72 @@ def build_folder_tree(
     return root
 
 
+# ── Project tree ────────────────────────────────────────────────────────────
+# Generic folder tree for an arbitrary *project* directory. Unlike the BACKPACK
+# tree, this mirrors whatever folders exist on disk; every folder is scannable
+# (scan_mode="files" → its direct files show in the Explorer).
+
+_PROJECT_SKIP_DIRS = frozenset({
+    ".git", ".svn", "__pycache__", "node_modules", "$RECYCLE.BIN",
+    "System Volume Information", ".preview", ".json", ".thumbs", "__MACOSX",
+})
+_PROJECT_MAX_DEPTH = 8   # guard against pathologically deep trees
+
+
+def build_project_tree(project_root: Path) -> FolderNode:
+    """Build a FolderNode tree mirroring the on-disk project directory."""
+    root = FolderNode(
+        disk_name=project_root.name or str(project_root),
+        display_name=project_root.name or str(project_root),
+        disk_path=project_root,
+        scan_mode="files",
+    )
+    if project_root.exists():
+        _walk_project_dir(project_root, root, depth=0)
+    return root
+
+
+def _walk_project_dir(folder: Path, parent: FolderNode, depth: int) -> None:
+    if depth >= _PROJECT_MAX_DEPTH:
+        return
+    try:
+        entries = sorted(p for p in folder.iterdir() if p.is_dir())
+    except (PermissionError, OSError):
+        return
+    for sub in entries:
+        if sub.name.startswith(".") or sub.name in _PROJECT_SKIP_DIRS:
+            continue
+        node = FolderNode(
+            disk_name=sub.name,
+            display_name=disk_to_display(sub.name),
+            disk_path=sub,
+            scan_mode="files",
+            parent=parent,
+        )
+        parent.children.append(node)
+        _walk_project_dir(sub, node, depth + 1)
+
+
+def scaffold_project(parent_dir: Path, name: str, template: list[str]) -> Path:
+    """Create a new project folder *name* under *parent_dir* and build the
+    template subfolders inside it. Returns the new project path."""
+    project = parent_dir / name
+    project.mkdir(parents=True, exist_ok=True)
+    for rel in template:
+        rel = rel.strip().strip("/\\")
+        if rel:
+            (project / Path(rel)).mkdir(parents=True, exist_ok=True)
+    return project
+
+
+def ensure_template_folders(project_root: Path, template: list[str]) -> None:
+    """Create any missing template subfolders inside an existing project."""
+    for rel in template:
+        rel = rel.strip().strip("/\\")
+        if rel:
+            (project_root / Path(rel)).mkdir(parents=True, exist_ok=True)
+
+
 def _infer_scan_mode(category_disk_name: str) -> str:
     """Best-guess scan mode for a user-added folder based on its category."""
     m = {
@@ -242,7 +310,7 @@ def add_user_folder(
     names = data.setdefault(category_disk_name, [])
     if folder_name not in names:
         names.append(folder_name)
-    (backpack_root / category_disk_name / folder_name).mkdir(parents=True, exist_ok=True)
+    (_assets_root(backpack_root) / category_disk_name / folder_name).mkdir(parents=True, exist_ok=True)
     _save_user_folders(backpack_root, data)
 
 

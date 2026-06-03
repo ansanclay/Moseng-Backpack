@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QHBoxLayout, QMenu,
+    QScrollArea, QFrame, QHBoxLayout, QMenu, QLineEdit,
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
@@ -41,6 +41,7 @@ class TagChip(QPushButton):
         label = f"{name}  {count}" if count else name
         super().__init__(label, parent)
         self.tag_name = name
+        self.count = count
         self.setCheckable(True)
         self.setMinimumHeight(28)
         self.setCursor(Qt.PointingHandCursor)
@@ -91,30 +92,9 @@ class ResolutionChip(QPushButton):
         label = f"{res}  {count}" if count else res
         super().__init__(label, parent)
         self.res_name = res
+        self.setObjectName("resChip")
         self.setCheckable(True)
-        self.setMinimumHeight(26)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #6f7280;
-                border: none;
-                border-radius: 5px;
-                padding: 3px 12px;
-                text-align: left;
-                font-size: 11px;
-                font-family: "DM Sans", "Inter", "Segoe UI", sans-serif;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,10);
-                color: #cdd0df;
-            }
-            QPushButton:checked {
-                background: #05091e;
-                color: #1a3fff;
-                border: 1px solid rgba(0,42,255,40);
-            }
-        """)
 
 
 class SidebarPanel(QWidget):
@@ -128,12 +108,16 @@ class SidebarPanel(QWidget):
         super().__init__(parent)
         self.accent = accent_color
         self.setObjectName("sidebar")
-        self.setFixedWidth(210)
+        self.setMinimumWidth(150)   # adaptive: resizable, no longer pinned
         self._chips: list[TagChip] = []
         self._res_chips: list[ResolutionChip] = []
         self._tag_registry: dict[str, TagInfo] = {}
         self._backpack_root: Path | None = None
         self._setup_ui()
+
+    def sizeHint(self) -> QSize:
+        # Preferred (initial) width; user can resize down to minimumWidth.
+        return QSize(210, super().sizeHint().height())
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -157,28 +141,60 @@ class SidebarPanel(QWidget):
 
         # ── Tags section ──
         tag_header = QHBoxLayout()
-        tag_header.setContentsMargins(16, 10, 8, 6)
+        tag_header.setContentsMargins(16, 10, 8, 4)
         tag_title = QLabel("TAGS")
         tag_title.setObjectName("sidebarTitle")
         tag_header.addWidget(tag_title)
         tag_header.addStretch()
 
+        # Sort toggle: alphabetical ↔ most-used.
+        self._sort_mode = "count"   # "name" | "count"
+        self._btn_sort = QPushButton()
+        self._btn_sort.setObjectName("tagSortBtn")
+        self._btn_sort.setFixedHeight(20)
+        self._btn_sort.setCursor(Qt.PointingHandCursor)
+        self._btn_sort.clicked.connect(self._toggle_sort)
+        tag_header.addWidget(self._btn_sort)
+
         btn_add = QPushButton("+")
+        btn_add.setObjectName("tagAddBtn")
         btn_add.setFixedSize(24, 24)
+        btn_add.setCursor(Qt.PointingHandCursor)
         btn_add.setToolTip("Add new tag")
-        btn_add.setStyleSheet(f"""
-            QPushButton {{
-                background-color: rgba(255,255,255,10); color: {self.accent};
-                border: 1px solid #101118; border-radius: 12px;
-                font-size: 15px; font-weight: 600;
-            }}
-            QPushButton:hover {{
-                background-color: rgba(255,255,255,18); border-color: #18192a;
-            }}
-        """)
         btn_add.clicked.connect(self.add_tag_requested.emit)
         tag_header.addWidget(btn_add)
         layout.addLayout(tag_header)
+
+        # Live tag search — filters the chip list as you type.
+        search_wrap = QHBoxLayout()
+        search_wrap.setContentsMargins(8, 0, 8, 4)
+        self._tag_search = QLineEdit()
+        self._tag_search.setObjectName("filterSearch")
+        self._tag_search.setPlaceholderText("Filter tags…")
+        self._tag_search.setClearButtonEnabled(True)
+        self._tag_search.textChanged.connect(self._filter_chip_list)
+        search_wrap.addWidget(self._tag_search)
+        layout.addLayout(search_wrap)
+
+        # Active-filter bar — count + one-click clear (hidden when nothing active).
+        self._meta_bar = QWidget()
+        self._meta_bar.setObjectName("filterMetaBar")
+        meta_row = QHBoxLayout(self._meta_bar)
+        meta_row.setContentsMargins(16, 0, 10, 4)
+        meta_row.setSpacing(6)
+        self._meta_label = QLabel("")
+        self._meta_label.setObjectName("filterCount")
+        meta_row.addWidget(self._meta_label)
+        meta_row.addStretch()
+        self._btn_clear = QPushButton("Clear")
+        self._btn_clear.setObjectName("filterClear")
+        self._btn_clear.setCursor(Qt.PointingHandCursor)
+        self._btn_clear.clicked.connect(self._clear_all)
+        meta_row.addWidget(self._btn_clear)
+        self._meta_bar.setVisible(False)
+        layout.addWidget(self._meta_bar)
+
+        self._refresh_sort_button()
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -204,6 +220,14 @@ class SidebarPanel(QWidget):
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(8, 4, 8, 8)
         self._layout.setSpacing(3)
+
+        # Empty / no-match hint (shown when there are no chips to display).
+        self._empty_hint = QLabel("")
+        self._empty_hint.setObjectName("tagEmptyHint")
+        self._empty_hint.setWordWrap(True)
+        self._empty_hint.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self._empty_hint.setVisible(False)
+        self._layout.addWidget(self._empty_hint)
         self._layout.addStretch()
 
         scroll.setWidget(self._container)
@@ -225,13 +249,18 @@ class SidebarPanel(QWidget):
             c.deleteLater()
         self._res_chips.clear()
 
+        # Count each material ONCE per unique resolution it contains.
+        # Quixel materials carry maps from multiple res subdirs (1K/2K/4K),
+        # so a single material can land in several buckets.
         res_counts: dict[str, int] = {}
         for mat in materials:
+            mat_res: set[str] = set()
             for a in mat.maps:
                 tag = detect_resolution_tag(a.filename)
                 if tag:
-                    res_counts[tag] = res_counts.get(tag, 0) + 1
-                    break  # one count per material
+                    mat_res.add(tag)
+            for tag in mat_res:
+                res_counts[tag] = res_counts.get(tag, 0) + 1
         for asset in assets:
             tag = detect_resolution_tag(asset.filename)
             if tag:
@@ -262,13 +291,7 @@ class SidebarPanel(QWidget):
             if asset.meta.favorite:
                 tag_counts["Favorites"] = tag_counts.get("Favorites", 0) + 1
 
-        sorted_tags = []
-        if "Favorites" in tag_counts:
-            sorted_tags.append(("Favorites", tag_counts.pop("Favorites")))
-        for name in sorted(tag_counts.keys()):
-            sorted_tags.append((name, tag_counts[name]))
-
-        for name, count in sorted_tags:
+        for name, count in tag_counts.items():
             tag_info = self._tag_registry.get(name)
             chip = TagChip(name, count, tag_info=tag_info, accent=self.accent,
                           backpack_root=self._backpack_root)
@@ -276,16 +299,93 @@ class SidebarPanel(QWidget):
             chip.setContextMenuPolicy(Qt.CustomContextMenu)
             chip.customContextMenuRequested.connect(
                 lambda _pos, n=name: self._chip_context_menu(n))
-            self._layout.insertWidget(self._layout.count() - 1, chip)
             self._chips.append(chip)
+
+        self._apply_sort()                       # order + place chips in layout
+        self._filter_chip_list(self._tag_search.text())   # keep any active search
+        self._update_meta()
+
+    # ── ordering / search / active-filter feedback ────────────────────────────
+    def _apply_sort(self):
+        """Reorder the existing chips in the layout (Favorites always first)."""
+        for c in self._chips:
+            self._layout.removeWidget(c)
+
+        def key(c: TagChip):
+            fav = c.tag_name.lower() != "favorites"   # False sorts first
+            if self._sort_mode == "count":
+                return (fav, -c.count, c.tag_name.lower())
+            return (fav, c.tag_name.lower())
+
+        self._chips.sort(key=key)
+        idx = self._layout.indexOf(self._empty_hint)
+        for c in self._chips:
+            self._layout.insertWidget(idx, c)
+            idx += 1
+
+    def _toggle_sort(self):
+        self._sort_mode = "name" if self._sort_mode == "count" else "count"
+        self._refresh_sort_button()
+        self._apply_sort()
+
+    def _refresh_sort_button(self):
+        if self._sort_mode == "count":
+            self._btn_sort.setText("Top")
+            self._btn_sort.setToolTip("Sorted by most used — click for A–Z")
+        else:
+            self._btn_sort.setText("A–Z")
+            self._btn_sort.setToolTip("Sorted A–Z — click for most used")
+
+    def _filter_chip_list(self, text: str):
+        t = text.strip().lower()
+        any_visible = False
+        for c in self._chips:
+            vis = t in c.tag_name.lower()
+            c.setVisible(vis)
+            any_visible = any_visible or vis
+        self._update_empty_hint(any_visible, bool(t))
+
+    def _update_empty_hint(self, any_visible: bool, searching: bool):
+        if not self._chips:
+            self._empty_hint.setText(
+                "No tags here yet.\nSelect items and tag them in the Inspector.")
+            self._empty_hint.setVisible(True)
+        elif not any_visible and searching:
+            self._empty_hint.setText("No tags match your filter.")
+            self._empty_hint.setVisible(True)
+        else:
+            self._empty_hint.setVisible(False)
+
+    def _update_meta(self):
+        n = (sum(1 for c in self._chips if c.isChecked())
+             + sum(1 for c in self._res_chips if c.isChecked()))
+        if n:
+            self._meta_label.setText(f"{n} filter{'s' if n > 1 else ''} active")
+        self._meta_bar.setVisible(bool(n))
+
+    def _clear_all(self):
+        """Reset all tag + resolution selections in one click."""
+        had_tags = any(c.isChecked() for c in self._chips)
+        had_res = any(c.isChecked() for c in self._res_chips)
+        for c in (*self._chips, *self._res_chips):
+            c.blockSignals(True)
+            c.setChecked(False)
+            c.blockSignals(False)
+        if had_tags:
+            self.tags_changed.emit([])
+        if had_res:
+            self.resolutions_changed.emit([])
+        self._update_meta()
 
     def _on_toggled(self, checked):
         selected = [c.tag_name for c in self._chips if c.isChecked()]
         self.tags_changed.emit(selected)
+        self._update_meta()
 
     def _on_res_toggled(self, checked):
         selected = [c.res_name for c in self._res_chips if c.isChecked()]
         self.resolutions_changed.emit(selected)
+        self._update_meta()
 
     def _chip_context_menu(self, tag_name: str):
         # Skip Favorites — it's a virtual tag, not deletable
@@ -302,3 +402,4 @@ class SidebarPanel(QWidget):
             c.setChecked(False)
         for c in self._res_chips:
             c.setChecked(False)
+        self._update_meta()

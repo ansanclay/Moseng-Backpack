@@ -5,11 +5,39 @@ Also handles generic resolution detection from image dimensions.
 """
 
 import re
+from functools import lru_cache
 from pathlib import Path
-from PIL import Image
+# NOTE: PIL is imported lazily inside the functions that actually decode images
+# (downscale / dimension probing). The scanner imports this module only for the
+# pure string helpers below, so keeping PIL out of module scope removes it from
+# the startup / scan import path.
 
-# Quixel resolution pattern: _4K_, _2K_, _1K_, _512_ etc.
-_RES_PATTERN = re.compile(r"_(\d+K|512)_", re.I)
+# Quixel resolution pattern: matches a resolution tag delimited by
+# separators (`_`, `-`, space) or string boundaries. Examples:
+#   acg_4K_Albedo.jpg    → 4K      (middle, both sides _)
+#   Rock_Mossy_4K        → 4K      (suffix)
+#   Rock_4K.jpg          → 4K      (suffix before extension)
+#   4K_surface_ms        → 4K      (prefix)
+# The capture group keeps the tag only; downscale_target_name still
+# replaces text at m.start(1)..m.end(1).
+_RES_PATTERN = re.compile(r"(?:^|(?<=[_\-\s]))(\d+K|512)(?=[_\-\s.]|$)", re.I)
+
+
+# Strip every occurrence of a resolution tag (and its leading separator)
+# from a material/folder name, so the displayed name doesn't include
+# `_4K`, `_2K` etc.
+_RES_STRIP_PATTERN = re.compile(r"[_\-\s](\d+K|512)(?=[_\-\s.]|$)", re.I)
+
+
+@lru_cache(maxsize=8192)
+def strip_resolution_suffix(name: str) -> str:
+    """Return *name* with every embedded resolution tag removed.
+
+        Rock_Mossy_4K              -> Rock_Mossy
+        vbjblgkcg_4K_surface_ms    -> vbjblgkcg_surface_ms
+    """
+    cleaned = _RES_STRIP_PATTERN.sub("", name)
+    return cleaned.strip("_- ")
 
 # Resolution targets (tag → max pixel dimension)
 RESOLUTION_MAP = {
@@ -39,6 +67,7 @@ def _res_px(tag: str) -> int:
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".exr"}
 
 
+@lru_cache(maxsize=8192)
 def detect_resolution_tag(filename: str) -> str | None:
     """Extract the resolution tag (e.g. '4K') from a filename."""
     m = _RES_PATTERN.search(filename)
@@ -47,6 +76,7 @@ def detect_resolution_tag(filename: str) -> str | None:
 
 def detect_resolution_from_image(filepath: Path) -> str | None:
     """Detect resolution by reading the actual image dimensions."""
+    from PIL import Image
     try:
         with Image.open(str(filepath)) as img:
             w, h = img.size
@@ -112,6 +142,7 @@ def downscale_material(material_folder: Path, target_res: str) -> tuple[int, lis
 
     Returns (count_created, errors).
     """
+    from PIL import Image
     target_size = RESOLUTION_MAP.get(target_res)
     if not target_size:
         return 0, [f"Unknown resolution: {target_res}"]
@@ -179,6 +210,7 @@ def downscale_single_file(filepath: Path, target_res: str) -> tuple[Path | None,
 
     Returns (new_path, error_msg). new_path is None on error.
     """
+    from PIL import Image
     target_size = RESOLUTION_MAP.get(target_res)
     if not target_size:
         return None, f"Unknown resolution: {target_res}"
